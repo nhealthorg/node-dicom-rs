@@ -205,14 +205,14 @@ results.forEach(result => {
 });
 
 // Or use manual queries for flexibility
-const results2 = await finder.find(
-    {
+const results2 = await finder.find({
+    query: {
         PatientID: 'PAT12345',
         StudyDate: '20240101-20240131',
         Modality: 'CT'
     },
-    'StudyRoot'
-);
+    queryModel: 'StudyRoot'
+});
 ```
 
 For detailed documentation, see:
@@ -235,23 +235,24 @@ const mover = new MoveScu({
 
 // Move an entire study to a destination AE
 // Note: Destination AE must be configured in the source PACS
-const result = await mover.moveStudy(
-    {
+const result = await mover.moveStudy({
+    query: {
         StudyInstanceUID: '1.2.840.113619.2.55.3.4.1762893313.19303.1234567890.123',
         QueryRetrieveLevel: 'STUDY'
     },
-    'DESTINATION_AE',  // AE title where instances should be sent
-    'StudyRoot',       // Optional: Query model (default: 'StudyRoot')
-    (err, event) => {  // Optional: Progress callback
+    moveDestination: 'DESTINATION_AE',  // AE title where instances should be sent
+    queryModel: 'StudyRoot',            // Optional: Query model (default: 'StudyRoot')
+    onSubOperation: (err, event) => {   // Optional: Progress callback
         if (err) return;
-        const progress = (event.completed / event.total * 100).toFixed(1);
-        console.log(`Progress: ${event.completed}/${event.total} (${progress}%)`);
+        const done = event.data.completed + event.data.remaining;
+        const progress = (event.data.completed / done * 100).toFixed(1);
+        console.log(`Progress: ${event.data.completed}/${done} (${progress}%)`);
     },
-    (err, event) => {  // Optional: Completion callback
+    onCompleted: (err, event) => {      // Optional: Completion callback
         if (err) return;
-        console.log(`Completed in ${event.durationMs}ms`);
+        console.log(`Completed in ${event.data.durationMs}ms`);
     }
-);
+});
 
 console.log(`Moved ${result.completed} of ${result.total} instances`);
 if (result.failed > 0) {
@@ -259,24 +260,24 @@ if (result.failed > 0) {
 }
 
 // Move specific series
-await mover.moveStudy(
-    {
+await mover.moveStudy({
+    query: {
         StudyInstanceUID: '1.2.3.4.5',
         SeriesInstanceUID: '1.2.3.4.5.6',
         QueryRetrieveLevel: 'SERIES'
     },
-    'DESTINATION_AE'
-);
+    moveDestination: 'DESTINATION_AE'
+});
 
 // Move all patient studies
-await mover.moveStudy(
-    {
+await mover.moveStudy({
+    query: {
         PatientID: 'PAT12345',
         QueryRetrieveLevel: 'PATIENT'
     },
-    'DESTINATION_AE',
-    'PatientRoot'
-);
+    moveDestination: 'DESTINATION_AE',
+    queryModel: 'PatientRoot'
+});
 ```
 
 **Important**: C-MOVE requires the destination AE title to be configured in the source PACS. For Orthanc, add the destination to the `DicomModalities` section in the configuration.

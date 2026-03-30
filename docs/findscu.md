@@ -37,14 +37,14 @@ const query = QueryBuilder.study()
 const results = await finder.findWithQuery(query);
 
 // Method 2: Manual query (flexible)
-const results2 = await finder.find(
-    {
+const results2 = await finder.find({
+    query: {
         PatientName: 'DOE^JOHN',
         StudyDate: '20240101-20240131',
         Modality: 'CT'
     },
-    'StudyRoot'
-);
+    queryModel: 'StudyRoot'
+});
 
 console.log(`Found ${results.length} studies`);
 results.forEach(result => {
@@ -127,37 +127,39 @@ Use the `find()` method for manual queries when you need maximum flexibility:
 
 ```typescript
 find(
-    query: object,
-    queryModel?: 'StudyRoot' | 'PatientRoot' | 'ModalityWorklist',
-    onResult?: (err, result) => void,
-    onCompleted?: (err, completed) => void
+    query: Record<string, string>,
+    options?: {
+        queryModel?: 'StudyRoot' | 'PatientRoot' | 'ModalityWorklist',
+        onResult?: (err: Error | null, event: FindResultEvent) => void,
+        onCompleted?: (err: Error | null, event: FindCompletedEvent) => void
+    }
 ): Promise<FindResult[]>
 ```
 
 **Example:**
 
 ```typescript
-const results = await finder.find(
-    {
+const results = await finder.find({
+    query: {
         // Query parameters as DICOM tag names
         PatientID: 'PAT12345',
         StudyDate: '20240101-20240131',
         Modality: 'CT'
     },
-    'StudyRoot',  // Query model (optional, defaults to StudyRoot)
-    (err, result) => {
+    queryModel: 'StudyRoot',  // Optional, defaults to StudyRoot
+    onResult: (err, result) => {
         // Callback for each result
         if (!err) {
             console.log('Match found:', result.data?.StudyInstanceUID);
         }
     },
-    (err, completed) => {
+    onCompleted: (err, completed) => {
         // Callback when complete
         if (!err) {
             console.log(completed.message);  // "C-FIND completed: 5 result(s) in 0.23s"
         }
     }
-);
+});
 ```
 
 ### QueryBuilder (Recommended)
@@ -167,8 +169,10 @@ The `QueryBuilder` provides a type-safe, fluent API for constructing queries wit
 ```typescript
 findWithQuery(
     query: QueryBuilder,
-    onResult?: (err, result) => void,
-    onCompleted?: (err, completed) => void
+    callbacks?: {
+        onResult?: (err: Error | null, event: FindResultEvent) => void,
+        onCompleted?: (err: Error | null, event: FindCompletedEvent) => void
+    }
 ): Promise<FindResult[]>
 ```
 
@@ -184,19 +188,18 @@ const query = QueryBuilder.study()
     .studyDescription('*Abdomen*')
     .includeAllReturnAttributes();
 
-const results = await finder.findWithQuery(
-    query,
-    (err, result) => {
+const results = await finder.findWithQuery(query, {
+    onResult: (err, result) => {
         if (!err && result.data) {
             console.log('Study found:', result.data.StudyInstanceUID);
         }
     },
-    (err, completed) => {
+    onCompleted: (err, completed) => {
         if (!err) {
             console.log(`Query completed: ${completed.data?.totalResults} results`);
         }
     }
-);
+});
 ```
 
 ## Query Models
@@ -210,9 +213,12 @@ Query and retrieve at the study level. This is the most commonly used model.
 ```typescript
 // Manual query
 const results = await finder.find({
-    PatientName: 'DOE^*',
-    StudyDate: '20240101-'
-}, 'StudyRoot');
+    query: {
+        PatientName: 'DOE^*',
+        StudyDate: '20240101-'
+    },
+    queryModel: 'StudyRoot'
+});
 
 // QueryBuilder
 const query = QueryBuilder.study()
@@ -228,11 +234,14 @@ Query and retrieve at the patient level.
 ```typescript
 // Manual query
 const results = await finder.find({
-    PatientID: 'PAT12345',
-    PatientName: '',
-    PatientBirthDate: '',
-    PatientSex: ''
-}, 'PatientRoot');
+    query: {
+        PatientID: 'PAT12345',
+        PatientName: '',
+        PatientBirthDate: '',
+        PatientSex: ''
+    },
+    queryModel: 'PatientRoot'
+});
 
 // QueryBuilder
 const query = QueryBuilder.patient()
@@ -249,9 +258,12 @@ Query scheduled procedures from the worklist.
 ```typescript
 // Manual query
 const results = await finder.find({
-    ScheduledProcedureStepStartDate: '20240315',
-    Modality: 'MR'
-}, 'ModalityWorklist');
+    query: {
+        ScheduledProcedureStepStartDate: '20240315',
+        Modality: 'MR'
+    },
+    queryModel: 'ModalityWorklist'
+});
 
 // QueryBuilder
 const query = QueryBuilder.modalityWorklist()
@@ -283,10 +295,10 @@ Callback invoked for each matching result found during the query.
 **Example:**
 
 ```typescript
-await finder.find(
-    { PatientName: '*' },
-    'StudyRoot',
-    (err, result) => {
+await finder.find({
+    query: { PatientName: '*' },
+    queryModel: 'StudyRoot',
+    onResult: (err, result) => {
         if (err) {
             console.error('Error:', err);
             return;
@@ -299,7 +311,7 @@ await finder.find(
             console.log('Date:', data.StudyDate);
         }
     }
-);
+});
 ```
 
 ### onCompleted
@@ -321,11 +333,10 @@ Callback invoked when the entire query completes.
 **Example:**
 
 ```typescript
-await finder.find(
-    { Modality: 'CT' },
-    'StudyRoot',
-    null,  // No per-result callback
-    (err, completed) => {
+await finder.find({
+    query: { Modality: 'CT' },
+    queryModel: 'StudyRoot',
+    onCompleted: (err, completed) => {
         if (err) {
             console.error('Query failed:', err);
             return;
@@ -337,7 +348,7 @@ await finder.find(
             console.log(`Query took ${completed.data.durationSeconds.toFixed(2)}s`);
         }
     }
-);
+});
 ```
 
 ## Common Query Patterns
@@ -445,15 +456,15 @@ patients.forEach(p => {
 You can also query using DICOM tag hex codes instead of names:
 
 ```typescript
-const results = await finder.find(
-    {
+const results = await finder.find({
+    query: {
         '00100010': '',  // PatientName
         '0020000D': '',  // StudyInstanceUID
         '00080020': '',  // StudyDate
         '00081030': ''   // StudyDescription
     },
-    'StudyRoot'
-);
+    queryModel: 'StudyRoot'
+});
 ```
 
 ### Wildcard Patterns
@@ -478,10 +489,13 @@ const query = QueryBuilder.study()
 ```typescript
 // Only return PatientName, StudyDate, and Modality
 const results = await finder.find({
-    PatientName: '',
-    StudyDate: '',
-    Modality: ''
-}, 'StudyRoot');
+    query: {
+        PatientName: '',
+        StudyDate: '',
+        Modality: ''
+    },
+    queryModel: 'StudyRoot'
+});
 
 // Return all standard attributes
 const query = QueryBuilder.study()
@@ -496,21 +510,21 @@ Track query progress in real-time:
 ```typescript
 let matchCount = 0;
 
-const results = await finder.find(
-    { Modality: 'CT' },
-    'StudyRoot',
-    (err, result) => {
+const results = await finder.find({
+    query: { Modality: 'CT' },
+    queryModel: 'StudyRoot',
+    onResult: (err, result) => {
         if (!err) {
             matchCount++;
             console.log(`Match ${matchCount}: ${result.data?.PatientName}`);
         }
     },
-    (err, completed) => {
+    onCompleted: (err, completed) => {
         if (!err) {
             console.log(`Query complete! Found ${matchCount} matches in ${completed.data?.durationSeconds}s`);
         }
     }
-);
+});
 ```
 
 ### Error Handling
@@ -518,8 +532,11 @@ const results = await finder.find(
 ```typescript
 try {
     const results = await finder.find({
-        PatientID: 'PAT12345'
-    }, 'StudyRoot');
+        query: {
+            PatientID: 'PAT12345'
+        },
+        queryModel: 'StudyRoot'
+    });
     
     if (results.length === 0) {
         console.log('No studies found for this patient');

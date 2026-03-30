@@ -28,17 +28,17 @@ const findScu = new FindScu({
 });
 
 try {
-    await findScu.find(
-        {
+    await findScu.find({
+        query: {
             StudyInstanceUID: '',
             PatientName: '',
             PatientID: '',
             StudyDate: '',
             StudyDescription: '',
             Modality: ''
-        },  // Request these attributes
-        'StudyRoot',
-        (err, result) => {
+        },
+        queryModel: 'StudyRoot',
+        onResult: (err, result) => {
             if (err) {
                 console.error('Find error:', err);
                 return;
@@ -47,7 +47,7 @@ try {
                 studies.push(result.data);
             }
         }
-    );
+    });
     
     if (studies.length === 0) {
         console.error('❌ No studies found in Orthanc');
@@ -115,14 +115,14 @@ const moveScu = new MoveScu({
 try {
     console.log('Starting C-MOVE operation...\n');
     
-    const result = await moveScu.moveStudy(
-        {
+    const result = await moveScu.moveStudy({
+        query: {
             QueryRetrieveLevel: 'STUDY',
             StudyInstanceUID: testStudy.StudyInstanceUID
         },
-        'DEMO-SCP',
-        'StudyRoot',
-        (err, event) => {
+        moveDestination: 'DEMO-SCP',
+        queryModel: 'StudyRoot',
+        onSubOperation: (err, event) => {
             if (err) {
                 console.error('  ❌ Sub-operation error:', err.message);
                 return;
@@ -134,14 +134,14 @@ try {
                 console.log(`  📊 Progress: ${event.data.completed}/${event.data.total} (${progress}%) - Failed: ${event.data.failed}`);
             }
         },
-        (err, event) => {
+        onCompleted: (err, event) => {
             if (err) {
                 console.error('  ❌ Completion error:', err.message);
                 return;
             }
             console.log(`\n  ✅ ${event.message}`);
         }
-    );
+    });
     
     console.log('\n' + '='.repeat(80));
     console.log('✅ C-MOVE SUCCESSFUL!');

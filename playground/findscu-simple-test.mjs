@@ -17,14 +17,14 @@ const finder = new FindScu({
 console.log('Querying for all studies...\n');
 
 try {
-  const results = await finder.find(
-    {
+  const results = await finder.find({
+    query: {
       StudyInstanceUID: '',
       PatientName: '',
       PatientID: ''
     },
-    'StudyRoot',
-    (err, result) => {
+    queryModel: 'StudyRoot',
+    onResult: (err, result) => {
       if (err) {
         console.error('❌ Error:', err);
       } else {
@@ -34,14 +34,14 @@ try {
         }
       }
     },
-    (err, completed) => {
+    onCompleted: (err, completed) => {
       if (err) {
         console.error('❌ Completion Error:', err);
       } else {
         console.log('✅', completed.message);
       }
     }
-  );
+  });
 
   console.log('\n📊 Total results:', results.length);
   process.exit(0);

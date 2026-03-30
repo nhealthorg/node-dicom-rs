@@ -144,14 +144,20 @@ pub struct MoveResult {
 /// });
 /// 
 /// // Move a study to destination AE
-/// const result = await moveScu.move(
-///     {
+/// const result = await moveScu.moveStudy({
+///     query: {
 ///         QueryRetrieveLevel: 'STUDY',
 ///         StudyInstanceUID: '1.2.3.4.5'
 ///     },
-///     'DESTINATION-AE',
-///     'StudyRoot'
-/// );
+///     moveDestination: 'DESTINATION-AE',
+///     queryModel: 'StudyRoot',
+///     onSubOperation: (err, event) => {
+///         console.log(`Progress: ${event.data?.completed} of ${event.data?.remaining + event.data?.completed}`);
+///     },
+///     onCompleted: (err, event) => {
+///         console.log(`Moved ${event.data?.completed} instances`);
+///     }
+/// });
 /// 
 /// console.log(`Moved ${result.completed} of ${result.total} instances`);
 /// ```
@@ -193,28 +199,19 @@ impl MoveScu {
 
     /// Perform a C-MOVE operation
     /// 
-    /// @param query - Query parameters as key-value pairs (e.g., { StudyInstanceUID: '1.2.3', QueryRetrieveLevel: 'STUDY' })
-    /// @param moveDestination - AE title of the destination for the move operation
-    /// @param queryModel - Query model to use ('StudyRoot' or 'PatientRoot', default: 'StudyRoot')
-    /// @param onSubOperation - Optional callback for sub-operation progress
-    /// @param onCompleted - Optional callback when operation completes
+    /// @param options - Configuration object containing query, moveDestination, queryModel, and callbacks
     /// @returns Promise<MoveResult>
     #[napi(
-        ts_args_type = "query: Record<string, string>, moveDestination: string, queryModel?: 'StudyRoot' | 'PatientRoot', onSubOperation?: (err: Error | null, event: MoveSubOperationEvent) => void, onCompleted?: (err: Error | null, event: MoveCompletedEvent) => void"
+        ts_args_type = "options: { query: Record<string, string>, moveDestination: string, queryModel?: 'StudyRoot' | 'PatientRoot', onSubOperation?: (err: Error | null, event: MoveSubOperationEvent) => void, onCompleted?: (err: Error | null, event: MoveCompletedEvent) => void }"
     )]
     pub fn move_study(
         &self,
-        query: Object,
-        move_destination: String,
-        query_model: Option<String>,
-        on_sub_operation: Option<ThreadsafeFunction<MoveSubOperationEvent>>,
-        on_completed: Option<ThreadsafeFunction<MoveCompletedEvent>>,
-    ) -> AsyncTask<MoveHandler> {
-        let query_model_enum = match query_model.as_deref() {
-            Some("PatientRoot") => MoveQueryModel::PatientRoot,
-            _ => MoveQueryModel::StudyRoot, // Default
-        };
-
+        options: Object,
+    ) -> Result<AsyncTask<MoveHandler>> {
+        // Extract query object
+        let query: Object = options
+            .get("query")?
+            .ok_or_else(|| napi::Error::from_reason("Missing required 'query' property"))?;
         let mut query_map = HashMap::new();
         if let Ok(keys) = query.get_property_names() {
             let len = keys.get_array_length().unwrap_or(0);
@@ -227,7 +224,22 @@ impl MoveScu {
             }
         }
 
-        AsyncTask::new(MoveHandler {
+        // Extract move destination
+        let move_destination: String = options
+            .get("moveDestination")?
+            .ok_or_else(|| napi::Error::from_reason("Missing required 'moveDestination' property"))?;
+
+        // Extract other options
+        let query_model_str: Option<String> = options.get("queryModel")?;
+        let query_model_enum = match query_model_str.as_deref() {
+            Some("PatientRoot") => MoveQueryModel::PatientRoot,
+            _ => MoveQueryModel::StudyRoot, // Default
+        };
+        
+        let on_sub_operation: Option<ThreadsafeFunction<MoveSubOperationEvent>> = options.get("onSubOperation")?;
+        let on_completed: Option<ThreadsafeFunction<MoveCompletedEvent>> = options.get("onCompleted")?;
+
+        Ok(AsyncTask::new(MoveHandler {
             addr: self.addr.clone(),
             calling_ae_title: self.calling_ae_title.clone(),
             called_ae_title: self.called_ae_title.clone(),
@@ -238,7 +250,7 @@ impl MoveScu {
             query_model: query_model_enum,
             on_sub_operation: on_sub_operation.map(Arc::new),
             on_completed: on_completed.map(Arc::new),
-        })
+        }))
     }
 }
 

@@ -38,8 +38,8 @@ async function findAllStudies() {
   console.log('═══════════════════════════════════════════════════════════\n');
 
   try {
-    const results = await finder.find(
-      {
+    const results = await finder.find({
+      query: {
         // Query parameters - use empty strings to retrieve all
         StudyInstanceUID: '',
         PatientName: '',
@@ -49,27 +49,28 @@ async function findAllStudies() {
         AccessionNumber: '',
         Modality: ''
       },
-      'StudyRoot', // Query model
-      (err, result) => {
-        if (err) {
-          console.error('❌ Error:', err);
-        } else {
-          console.log('📋 Result:', result.message);
-          if (result.data) {
-            console.log('   Patient:', result.data.PatientName || 'N/A');
-            console.log('   Study UID:', result.data.StudyInstanceUID || 'N/A');
-            console.log('   Date:', result.data.StudyDate || 'N/A');
-            console.log('   Description:', result.data.StudyDescription || 'N/A');
+      queryModel: 'StudyRoot',
+      onResult: (err, result) => {
+          if (err) {
+            console.error('❌ Error:', err);
+          } else {
+            console.log('📋 Result:', result.message);
+            if (result.data) {
+              console.log('   Patient:', result.data.PatientName || 'N/A');
+              console.log('   Study UID:', result.data.StudyInstanceUID || 'N/A');
+              console.log('   Date:', result.data.StudyDate || 'N/A');
+              console.log('   Description:', result.data.StudyDescription || 'N/A');
+              console.log();
+            }
+          }
+        },
+        onCompleted: (err, completed) => {
+          if (err) {
+            console.error('❌ Completion Error:', err);
+          } else {
+            console.log('✅ ' + completed.message);
             console.log();
           }
-        }
-      },
-      (err, completed) => {
-        if (err) {
-          console.error('❌ Completion Error:', err);
-        } else {
-          console.log('✅ ' + completed.message);
-          console.log();
         }
       }
     );
@@ -91,24 +92,25 @@ async function findByPatientName(patientName) {
   console.log('═══════════════════════════════════════════════════════════\n');
 
   try {
-    const results = await finder.find(
-      {
+    const results = await finder.find({
+      query: {
         PatientName: patientName, // DICOM wildcards: * and ?
         StudyInstanceUID: '',
         StudyDate: '',
         StudyDescription: '',
         Modality: ''
       },
-      'StudyRoot',
-      (err, result) => {
-        if (!err && result.data) {
-          console.log(`  📌 ${result.data.PatientName} - ${result.data.StudyDescription || 'N/A'}`);
-        }
-      },
-      (err, completed) => {
-        if (!err) {
-          console.log('\n✅ ' + completed.message);
-          console.log();
+      queryModel: 'StudyRoot',
+      onResult: (err, result) => {
+          if (!err && result.data) {
+            console.log(`  📌 ${result.data.PatientName} - ${result.data.StudyDescription || 'N/A'}`);
+          }
+        },
+        onCompleted: (err, completed) => {
+          if (!err) {
+            console.log('\n✅ ' + completed.message);
+            console.log();
+          }
         }
       }
     );
@@ -128,8 +130,8 @@ async function findByDateRange(startDate, endDate) {
   console.log('═══════════════════════════════════════════════════════════\n');
 
   try {
-    const results = await finder.find(
-      {
+    const results = await finder.find({
+      query: {
         StudyDate: `${startDate}-${endDate}`, // DICOM date range format
         PatientName: '',
         StudyInstanceUID: '',
@@ -137,19 +139,19 @@ async function findByDateRange(startDate, endDate) {
         Modality: '',
         AccessionNumber: ''
       },
-      'StudyRoot',
-      (err, result) => {
-        if (!err && result.data) {
-          console.log(`  📅 ${result.data.StudyDate} - ${result.data.PatientName} - ${result.data.StudyDescription || 'N/A'}`);
+      queryModel: 'StudyRoot',
+      onResult: (err, result) => {
+          if (!err && result.data) {
+            console.log(`  📅 ${result.data.StudyDate} - ${result.data.PatientName} - ${result.data.StudyDescription || 'N/A'}`);
+          }
+        },
+        onCompleted: (err, completed) => {
+          if (!err) {
+            console.log('\n✅ ' + completed.message);
+            console.log();
+          }
         }
-      },
-      (err, completed) => {
-        if (!err) {
-          console.log('\n✅ ' + completed.message);
-          console.log();
-        }
-      }
-    );
+    });
 
     return results;
   } catch (error) {
@@ -166,8 +168,8 @@ async function findByModality(modality) {
   console.log('═══════════════════════════════════════════════════════════\n');
 
   try {
-    const results = await finder.find(
-      {
+    const results = await finder.find({
+      query: {
         Modality: modality,
         PatientName: '',
         StudyInstanceUID: '',
@@ -175,19 +177,19 @@ async function findByModality(modality) {
         StudyDescription: '',
         AccessionNumber: ''
       },
-      'StudyRoot',
-      (err, result) => {
-        if (!err && result.data) {
-          console.log(`  🔬 ${result.data.Modality} - ${result.data.PatientName} - ${result.data.StudyDescription || 'N/A'}`);
+      queryModel: 'StudyRoot',
+      onResult: (err, result) => {
+          if (!err && result.data) {
+            console.log(`  🔬 ${result.data.Modality} - ${result.data.PatientName} - ${result.data.StudyDescription || 'N/A'}`);
+          }
+        },
+        onCompleted: (err, completed) => {
+          if (!err) {
+            console.log('\n✅ ' + completed.message);
+            console.log();
+          }
         }
-      },
-      (err, completed) => {
-        if (!err) {
-          console.log('\n✅ ' + completed.message);
-          console.log();
-        }
-      }
-    );
+    });
 
     return results;
   } catch (error) {
@@ -204,26 +206,26 @@ async function findPatients() {
   console.log('═══════════════════════════════════════════════════════════\n');
 
   try {
-    const results = await finder.find(
-      {
+    const results = await finder.find({
+      query: {
         PatientName: '',
         PatientID: '',
         PatientBirthDate: '',
         PatientSex: ''
       },
-      'PatientRoot', // Using Patient Root instead of Study Root
-      (err, result) => {
-        if (!err && result.data) {
-          console.log(`  👤 ${result.data.PatientName} (ID: ${result.data.PatientID || 'N/A'}) - DOB: ${result.data.PatientBirthDate || 'N/A'}`);
+      queryModel: 'PatientRoot', // Using Patient Root instead of Study Root
+      onResult: (err, result) => {
+          if (!err && result.data) {
+            console.log(`  👤 ${result.data.PatientName} (ID: ${result.data.PatientID || 'N/A'}) - DOB: ${result.data.PatientBirthDate || 'N/A'}`);
+          }
+        },
+        onCompleted: (err, completed) => {
+          if (!err) {
+            console.log('\n✅ ' + completed.message);
+            console.log();
+          }
         }
-      },
-      (err, completed) => {
-        if (!err) {
-          console.log('\n✅ ' + completed.message);
-          console.log();
-        }
-      }
-    );
+    });
 
     return results;
   } catch (error) {
@@ -240,30 +242,30 @@ async function findWithHexTags() {
   console.log('═══════════════════════════════════════════════════════════\n');
 
   try {
-    const results = await finder.find(
-      {
+    const results = await finder.find({
+      query: {
         '00100010': '', // PatientName
         '0020000D': '', // StudyInstanceUID
         '00080020': '', // StudyDate
         '00081030': ''  // StudyDescription
       },
-      'StudyRoot',
-      (err, result) => {
-        if (!err && result.data) {
-          console.log('  📋 Study found');
-          for (const [tag, value] of Object.entries(result.data)) {
-            console.log(`     ${tag}: ${value}`);
+      queryModel: 'StudyRoot',
+      onResult: (err, result) => {
+          if (!err && result.data) {
+            console.log('  📋 Study found');
+            for (const [tag, value] of Object.entries(result.data)) {
+              console.log(`     ${tag}: ${value}`);
+            }
+            console.log();
           }
-          console.log();
+        },
+        onCompleted: (err, completed) => {
+          if (!err) {
+            console.log('✅ ' + completed.message);
+            console.log();
+          }
         }
-      },
-      (err, completed) => {
-        if (!err) {
-          console.log('✅ ' + completed.message);
-          console.log();
-        }
-      }
-    );
+    });
 
     return results;
   } catch (error) {
@@ -278,10 +280,9 @@ async function findWithHexTags() {
     await findAllStudies();
     
     // Get the first study's patient name for targeted query
-    const allStudies = await finder.find(
-      { PatientName: '', StudyInstanceUID: '' },
-      'StudyRoot'
-    );
+    const allStudies = await finder.find({
+      query: { PatientName: '', StudyInstanceUID: '' }
+    });
     
     if (allStudies.length > 0 && allStudies[0].attributes?.PatientName) {
       const firstPatientName = allStudies[0].attributes.PatientName;

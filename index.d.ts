@@ -617,53 +617,54 @@ export declare class FindScu {
   /** * Execute a C-FIND query to search for DICOM entities.
    *
    * Performs a DICOM C-FIND operation with the specified query parameters.
-   * Results are streamed via the `onResult` callback and also returned as an array.
+   * Results are streamed via callbacks and also returned as an array.
    *
-   * @param query - Query parameters as key-value pairs (tag names or hex codes)
-   * @param queryModel - Query/Retrieve Information Model (optional, default: StudyRoot)
-   * @param onResult - Callback invoked for each matching result
-   * @param onCompleted - Callback invoked when query completes
+   * @param options - Configuration object containing query, queryModel, and callbacks
    * @returns Array of all matching results
    * @throws Error if query fails or connection cannot be established
    *
    * @example
    * ```typescript
    * // Search for studies by patient name
-   * const results = await finder.find(
-   *   {
+   * const results = await finder.find({
+   *   query: {
    *     PatientName: 'DOE^JOHN',
    *     StudyDate: '20240101-',
    *     Modality: 'CT'
    *   },
-   *   'StudyRoot',
-   *   (err, result) => {
+   *   queryModel: 'StudyRoot',
+   *   onResult: (err, result) => {
    *     if (!err) {
    *       console.log('Study UID:', result.data?.StudyInstanceUID);
    *     }
+   *   },
+   *   onCompleted: (err, event) => {
+   *     console.log(`Found ${event.data?.totalResults} studies`);
    *   }
-   * );
+   * });
    * ```
    *
    * @example
    * ```typescript
-   * // Wildcard query for all studies
+   * // Simple query without callbacks
    * const results = await finder.find({
-   *   StudyInstanceUID: '*',
-   *   PatientName: '',
-   *   StudyDate: '',
-   *   StudyDescription: ''
+   *   query: {
+   *     StudyInstanceUID: '*',
+   *     PatientName: '',
+   *     StudyDate: '',
+   *     StudyDescription: ''
+   *   }
    * });
    * ```
    */
-  find(query: object, queryModel?: QueryModel | undefined | null, onResult?: (((err: Error | null, arg: FindResultEvent) => void)) | undefined | null, onCompleted?: (((err: Error | null, arg: FindCompletedEvent) => void)) | undefined | null): NapiResult<Promise<unknown>>
+  find(options: { query: Record<string, string>, queryModel?: 'StudyRoot' | 'PatientRoot' | 'ModalityWorklist', onResult?: (err: Error | null, event: FindResultEvent) => void, onCompleted?: (err: Error | null, event: FindCompletedEvent) => void }): NapiResult<Promise<unknown>>
   /** * Execute a C-FIND query using a QueryBuilder.
    *
    * This is a more intuitive alternative to the `find()` method that accepts
    * a pre-built query with type-safe methods.
    *
    * @param query - QueryBuilder instance with configured search criteria
-   * @param onResult - Callback invoked for each matching result
-   * @param onCompleted - Callback invoked when query completes
+   * @param callbacks - Optional callbacks for result and completion events
    * @returns Array of all matching results
    * @throws Error if query fails or connection cannot be established
    *
@@ -675,15 +676,17 @@ export declare class FindScu {
    *   .modality("CT")
    *   .includeAllReturnAttributes();
    *
-   * const results = await finder.findWithQuery(
-   *   query,
-   *   (err, result) => {
+   * const results = await finder.findWithQuery(query, {
+   *   onResult: (err, result) => {
    *     if (!err) console.log('Found:', result.data);
+   *   },
+   *   onCompleted: (err, event) => {
+   *     console.log(`Query complete: ${event.data?.totalResults} results`);
    *   }
-   * );
+   * });
    * ```
    */
-  findWithQuery(query: QueryBuilder, onResult?: (((err: Error | null, arg: FindResultEvent) => void)) | undefined | null, onCompleted?: (((err: Error | null, arg: FindCompletedEvent) => void)) | undefined | null): NapiResult<Promise<unknown>>
+  findWithQuery(query: QueryBuilder, callbacks?: { onResult?: (err: Error | null, event: FindResultEvent) => void, onCompleted?: (err: Error | null, event: FindCompletedEvent) => void }): NapiResult<Promise<unknown>>
 }
 
 /**
@@ -702,14 +705,20 @@ export declare class FindScu {
  * });
  *
  * // Move a study to destination AE
- * const result = await moveScu.move(
- *     {
+ * const result = await moveScu.moveStudy({
+ *     query: {
  *         QueryRetrieveLevel: 'STUDY',
  *         StudyInstanceUID: '1.2.3.4.5'
  *     },
- *     'DESTINATION-AE',
- *     'StudyRoot'
- * );
+ *     moveDestination: 'DESTINATION-AE',
+ *     queryModel: 'StudyRoot',
+ *     onSubOperation: (err, event) => {
+ *         console.log(`Progress: ${event.data?.completed} of ${event.data?.remaining + event.data?.completed}`);
+ *     },
+ *     onCompleted: (err, event) => {
+ *         console.log(`Moved ${event.data?.completed} instances`);
+ *     }
+ * });
  *
  * console.log(`Moved ${result.completed} of ${result.total} instances`);
  * ```
@@ -720,14 +729,10 @@ export declare class MoveScu {
   /**
    * Perform a C-MOVE operation
    *
-   * @param query - Query parameters as key-value pairs (e.g., { StudyInstanceUID: '1.2.3', QueryRetrieveLevel: 'STUDY' })
-   * @param moveDestination - AE title of the destination for the move operation
-   * @param queryModel - Query model to use ('StudyRoot' or 'PatientRoot', default: 'StudyRoot')
-   * @param onSubOperation - Optional callback for sub-operation progress
-   * @param onCompleted - Optional callback when operation completes
+   * @param options - Configuration object containing query, moveDestination, queryModel, and callbacks
    * @returns Promise<MoveResult>
    */
-  moveStudy(query: Record<string, string>, moveDestination: string, queryModel?: 'StudyRoot' | 'PatientRoot', onSubOperation?: (err: Error | null, event: MoveSubOperationEvent) => void, onCompleted?: (err: Error | null, event: MoveCompletedEvent) => void): Promise<unknown>
+  moveStudy(options: { query: Record<string, string>, moveDestination: string, queryModel?: 'StudyRoot' | 'PatientRoot', onSubOperation?: (err: Error | null, event: MoveSubOperationEvent) => void, onCompleted?: (err: Error | null, event: MoveCompletedEvent) => void }): Promise<unknown>
 }
 
 /** Builder for creating Instance-level DICOM JSON responses */

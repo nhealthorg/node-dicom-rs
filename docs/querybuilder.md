@@ -741,8 +741,8 @@ if (results.length > 0) {
 
 **Old way (manual queries):**
 ```typescript
-const results = await finder.find(
-    {
+const results = await finder.find({
+    query: {
         'PatientName': 'Fischer^*',
         'PatientID': '',
         'PatientBirthDate': '',
@@ -755,8 +755,8 @@ const results = await finder.find(
         'AccessionNumber': '',
         'ReferringPhysicianName': ''
     },
-    'StudyRoot'
-);
+    queryModel: 'StudyRoot'
+});
 ```
 
 **New way (QueryBuilder):**
@@ -781,19 +781,18 @@ const query = QueryBuilder.study()
     .studyDateFrom('20240101')
     .includeAllReturnAttributes();
 
-const results = await finder.findWithQuery(
-    query,
-    (err, result) => {
+const results = await finder.findWithQuery(query, {
+    onResult: (err, result) => {
         if (!err && result.data) {
             console.log('Found study:', result.data.StudyInstanceUID);
         }
     },
-    (err, completed) => {
+    onCompleted: (err, completed) => {
         if (!err && completed.data) {
-            console.log(`Query completed: ${completed.data.totalResults} results in ${completed.data.durationSeconds}s`);
+            console.log(`Query completed: ${completed.data.totalResults} results`);
         }
     }
-);
+});
 ```
 
 ## Integration with FindScu

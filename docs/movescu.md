@@ -21,13 +21,20 @@ const moveScu = new MoveScu({
 });
 
 // Move a study to a destination AE
-const result = await moveScu.moveStudy(
-  {
+const result = await moveScu.moveStudy({
+  query: {
     StudyInstanceUID: '1.2.840.113619.2.55.3.4.1762893313.19303.1234567890.123',
     QueryRetrieveLevel: 'STUDY'
   },
-  'DESTINATION_AE'  // Must be configured in source PACS
-);
+  moveDestination: 'DESTINATION_AE',  // Must be configured in source PACS
+  queryModel: 'StudyRoot',
+  onSubOperation: (err, event) => {
+    console.log(`Progress: ${event.data?.completed}/${event.data?.remaining + event.data?.completed}`);
+  },
+  onCompleted: (err, event) => {
+    console.log(`Completed: ${event.message}`);
+  }
+});
 
 console.log(`Moved ${result.completed} of ${result.total} instances`);
 ```
@@ -60,15 +67,17 @@ const moveScu = new MoveScu({
 
 ```typescript
 moveStudy(
-  query: Record<string, string>,
-  moveDestination: string,
-  queryModel?: 'StudyRoot' | 'PatientRoot',
-  onSubOperation?: (err: Error | null, event: MoveSubOperationEvent) => void,
-  onCompleted?: (err: Error | null, event: MoveCompletedEvent) => void
+  options: {
+    query: Record<string, string>,
+    moveDestination: string,
+    queryModel?: 'StudyRoot' | 'PatientRoot',
+    onSubOperation?: (err: Error | null, event: MoveSubOperationEvent) => void,
+    onCompleted?: (err: Error | null, event: MoveCompletedEvent) => void
+  }
 ): Promise<MoveResult>
 ```
 
-**Parameters:**
+**Options:**
 
 - **query**: Key-value pairs defining what to move
   - `QueryRetrieveLevel`: Required - 'PATIENT', 'STUDY', 'SERIES', or 'IMAGE'
@@ -95,16 +104,22 @@ Study-centric model where series and images are children of studies:
 ```javascript
 // Move entire study
 await moveScu.moveStudy({
-  StudyInstanceUID: '1.2.3.4.5',
-  QueryRetrieveLevel: 'STUDY'
-}, 'DESTINATION_AE');
+  query: {
+    StudyInstanceUID: '1.2.3.4.5',
+    QueryRetrieveLevel: 'STUDY'
+  },
+  moveDestination: 'DESTINATION_AE'
+});
 
 // Move specific series
 await moveScu.moveStudy({
-  StudyInstanceUID: '1.2.3.4.5',
-  SeriesInstanceUID: '1.2.3.4.5.6',
-  QueryRetrieveLevel: 'SERIES'
-}, 'DESTINATION_AE');
+  query: {
+    StudyInstanceUID: '1.2.3.4.5',
+    SeriesInstanceUID: '1.2.3.4.5.6',
+    QueryRetrieveLevel: 'SERIES'
+  },
+  moveDestination: 'DESTINATION_AE'
+});
 ```
 
 ### Patient Root
@@ -113,14 +128,14 @@ Patient-centric model where studies are children of patients:
 
 ```javascript
 // Move all studies for a patient
-await moveScu.moveStudy(
-  {
+await moveScu.moveStudy({
+  query: {
     PatientID: 'PAT12345',
     QueryRetrieveLevel: 'PATIENT'
   },
-  'DESTINATION_AE',
-  'PatientRoot'
-);
+  moveDestination: 'DESTINATION_AE',
+  queryModel: 'PatientRoot'
+});
 ```
 
 ## Event Callbacks
@@ -130,24 +145,28 @@ await moveScu.moveStudy(
 Called for each progress update during the move operation:
 
 ```javascript
-await moveScu.moveStudy(
-  { StudyInstanceUID: '1.2.3.4.5', QueryRetrieveLevel: 'STUDY' },
-  'DESTINATION_AE',
-  'StudyRoot',
-  (err, event) => {
+await moveScu.moveStudy({
+  query: { StudyInstanceUID: '1.2.3.4.5', QueryRetrieveLevel: 'STUDY' },
+  moveDestination: 'DESTINATION_AE',
+  queryModel: 'StudyRoot',
+  onSubOperation: (err, event) => {
     if (err) {
-      console.error('Progress error:', err);
-      return;
-    }
-    
-    const progress = (event.completed / event.total * 100).toFixed(1);
-    console.log(`Moving: ${event.completed}/${event.total} (${progress}%)`);
-    
-    if (event.failed > 0) {
-      console.warn(`Failed: ${event.failed}`);
-    }
-    if (event.warning > 0) {
-      console.warn(`Warnings: ${event.warning}`);
+        console.error('Progress error:', err);
+        return;
+      }
+      
+      const data = event.data;
+      if (data) {
+        const progress = (data.completed / (data.completed + data.remaining) * 100).toFixed(1);
+        console.log(`Moving: ${data.completed}/${data.completed + data.remaining} (${progress}%)`);
+        
+        if (data.failed > 0) {
+          console.warn(`Failed: ${data.failed}`);
+        }
+        if (data.warning > 0) {
+          console.warn(`Warnings: ${data.warning}`);
+        }
+      }
     }
   }
 );
@@ -165,30 +184,36 @@ await moveScu.moveStudy(
 Called when the entire move operation finishes:
 
 ```javascript
-await moveScu.moveStudy(
-  { StudyInstanceUID: '1.2.3.4.5', QueryRetrieveLevel: 'STUDY' },
-  'DESTINATION_AE',
-  'StudyRoot',
-  null,  // No progress callback
-  (err, event) => {
-    if (err) {
-      console.error('Move failed:', err);
-      return;
-    }
-    
-    console.log('Move completed in', event.durationMs, 'ms');
-    console.log('Total:', event.total);
-    console.log('Completed:', event.completed);
-    console.log('Failed:', event.failed);
-    console.log('Warnings:', event.warning);
-    
-    if (event.completed === event.total && event.failed === 0) {
-      console.log('✓ All instances moved successfully');
-    } else {
-      console.warn('⚠ Some instances failed');
+await moveScu.moveStudy({
+  query: {
+    StudyInstanceUID: '1.2.3.4.5',
+    QueryRetrieveLevel: 'STUDY'
+  },
+  moveDestination: 'DESTINATION_AE',
+  queryModel: 'StudyRoot',
+  onCompleted: (err, event) => {
+      if (err) {
+        console.error('Move failed:', err);
+        return;
+      }
+      
+      const data = event.data;
+      if (data) {
+        console.log('Move completed in', data.duration_seconds, 's');
+        console.log('Total:', data.total);
+        console.log('Completed:', data.completed);
+        console.log('Failed:', data.failed);
+        console.log('Warnings:', data.warning);
+        
+        if (data.completed === data.total && data.failed === 0) {
+          console.log('✓ All instances moved successfully');
+        } else {
+          console.warn('⚠ Some instances failed');
+        }
+      }
     }
   }
-);
+});
 ```
 
 **MoveCompletedEvent Properties:**
@@ -213,7 +238,13 @@ interface MoveResult {
 
 Example:
 ```javascript
-const result = await moveScu.moveStudy(query, 'DESTINATION_AE');
+const result = await moveScu.moveStudy({
+  query: {
+    StudyInstanceUID: '1.2.3.4.5',
+    QueryRetrieveLevel: 'STUDY'
+  },
+  moveDestination: 'DESTINATION_AE'
+});
 
 if (result.failed > 0) {
   throw new Error(`Move incomplete: ${result.failed} failures`);
@@ -227,39 +258,39 @@ console.log(`Successfully moved ${result.completed} instances`);
 ### Move Entire Study
 
 ```javascript
-await moveScu.moveStudy(
-  {
+await moveScu.moveStudy({
+  query: {
     StudyInstanceUID: '1.2.840.113619.2.55.3.4.1762893313.19303.1234567890.123',
     QueryRetrieveLevel: 'STUDY'
   },
-  'WORKSTATION_AE'
-);
+  moveDestination: 'WORKSTATION_AE'
+});
 ```
 
 ### Move Specific Series
 
 ```javascript
-await moveScu.moveStudy(
-  {
+await moveScu.moveStudy({
+  query: {
     StudyInstanceUID: '1.2.3.4.5',
     SeriesInstanceUID: '1.2.3.4.5.6',
     QueryRetrieveLevel: 'SERIES'
   },
-  'WORKSTATION_AE'
-);
+  moveDestination: 'WORKSTATION_AE'
+});
 ```
 
 ### Move All Patient Studies
 
 ```javascript
-await moveScu.moveStudy(
-  {
+await moveScu.moveStudy({
+  query: {
     PatientID: 'PAT12345',
     QueryRetrieveLevel: 'PATIENT'
   },
-  'ARCHIVE_AE',
-  'PatientRoot'
-);
+  moveDestination: 'ARCHIVE_AE',
+  queryModel: 'PatientRoot'
+});
 ```
 
 ### Move Multiple Studies with Progress
@@ -274,21 +305,26 @@ const studyUIDs = [
 for (const uid of studyUIDs) {
   console.log(`\nMoving study ${uid}...`);
   
-  await moveScu.moveStudy(
-    {
+  await moveScu.moveStudy({
+    query: {
       StudyInstanceUID: uid,
       QueryRetrieveLevel: 'STUDY'
     },
-    'DESTINATION_AE',
-    'StudyRoot',
-    (err, event) => {
-      const progress = (event.completed / event.total * 100).toFixed(0);
-      process.stdout.write(`\rProgress: ${progress}%`);
-    },
-    (err, event) => {
-      console.log(`\n✓ Completed in ${event.durationMs}ms`);
+    moveDestination: 'DESTINATION_AE',
+    queryModel: 'StudyRoot',
+    onSubOperation: (err, event) => {
+        if (event.data) {
+          const progress = (event.data.completed / (event.data.completed + event.data.remaining) * 100).toFixed(0);
+          process.stdout.write(`\rProgress: ${progress}%`);
+        }
+      },
+      onCompleted: (err, event) => {
+        if (event.data) {
+          console.log(`\n✓ Completed in ${event.data.duration_seconds}s`);
+        }
+      }
     }
-  );
+  });
 }
 ```
 
@@ -313,13 +349,13 @@ await findScu.findStudies(
 
 // Move all found studies
 for (const study of studies) {
-  await moveScu.moveStudy(
-    {
+  await moveScu.moveStudy({
+    query: {
       StudyInstanceUID: study.StudyInstanceUID,
       QueryRetrieveLevel: 'STUDY'
     },
-    'DESTINATION_AE'
-  );
+    moveDestination: 'DESTINATION_AE'
+  });
 }
 ```
 
@@ -330,11 +366,11 @@ for (const study of studies) {
 ```javascript
 let lastUpdate = Date.now();
 
-await moveScu.moveStudy(
-  { StudyInstanceUID: '1.2.3.4.5', QueryRetrieveLevel: 'STUDY' },
-  'DESTINATION_AE',
-  'StudyRoot',
-  (err, event) => {
+await moveScu.moveStudy({
+  query: { StudyInstanceUID: '1.2.3.4.5', QueryRetrieveLevel: 'STUDY' },
+  moveDestination: 'DESTINATION_AE',
+  queryModel: 'StudyRoot',
+  onSubOperation: (err, event) => {
     if (err) return;
     
     // Update every 500ms to avoid console spam
@@ -352,7 +388,7 @@ await moveScu.moveStudy(
       lastUpdate = now;
     }
   }
-);
+});
 ```
 
 ### Move with Retry Logic
@@ -361,7 +397,10 @@ await moveScu.moveStudy(
 async function moveStudyWithRetry(moveScu, query, destination, maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await moveScu.moveStudy(query, destination);
+      const result = await moveScu.moveStudy({
+        query,
+        moveDestination: destination
+      });
       
       if (result.failed === 0) {
         return result;  // Success
@@ -381,7 +420,10 @@ async function moveStudyWithRetry(moveScu, query, destination, maxRetries = 3) {
   }
 }
 
-await moveStudyWithRetry(moveScu, query, 'DESTINATION_AE');
+await moveStudyWithRetry(moveScu, 
+  { StudyInstanceUID: '1.2.3.4.5', QueryRetrieveLevel: 'STUDY' },
+  'DESTINATION_AE'
+);
 ```
 
 ### Batch Move with Rate Limiting
@@ -395,13 +437,13 @@ async function batchMove(moveScu, studies, destination, concurrency = 2) {
     
     const batchResults = await Promise.all(
       batch.map(study => 
-        moveScu.moveStudy(
-          {
+        moveScu.moveStudy({
+          query: {
             StudyInstanceUID: study.StudyInstanceUID,
             QueryRetrieveLevel: 'STUDY'
           },
-          destination
-        ).catch(err => ({ error: err.message, study }))
+          moveDestination: destination
+        }).catch(err => ({ error: err.message, study }))
       )
     );
     
@@ -421,7 +463,10 @@ async function batchMove(moveScu, studies, destination, concurrency = 2) {
 
 ```javascript
 try {
-  await moveScu.moveStudy(query, 'DESTINATION_AE');
+  await moveScu.moveStudy({
+    query,
+    moveDestination: 'DESTINATION_AE'
+  });
 } catch (error) {
   if (error.message.includes('Association')) {
     console.error('Failed to connect to PACS:', error);
@@ -441,7 +486,10 @@ try {
 ### Handling Partial Failures
 
 ```javascript
-const result = await moveScu.moveStudy(query, 'DESTINATION_AE');
+const result = await moveScu.moveStudy({
+  query,
+  moveDestination: 'DESTINATION_AE'
+});
 
 if (result.failed > 0) {
   console.error(
@@ -503,11 +551,17 @@ curl -X PUT http://localhost:8042/modalities/DESTINATION_AE \
 2. **Move at study level**: More efficient than moving individual series
    ```javascript
    // Efficient
-   await moveScu.moveStudy({ StudyInstanceUID: uid, QueryRetrieveLevel: 'STUDY' }, dest);
+   await moveScu.moveStudy({
+     query: { StudyInstanceUID: uid, QueryRetrieveLevel: 'STUDY' },
+     moveDestination: dest
+   });
    
    // Less efficient (multiple operations)
    for (const seriesUID of seriesUIDs) {
-     await moveScu.moveStudy({ SeriesInstanceUID: seriesUID, QueryRetrieveLevel: 'SERIES' }, dest);
+     await moveScu.moveStudy({
+       query: { SeriesInstanceUID: seriesUID, QueryRetrieveLevel: 'SERIES' },
+       moveDestination: dest
+     });
    }
    ```
 
@@ -515,7 +569,7 @@ curl -X PUT http://localhost:8042/modalities/DESTINATION_AE \
    ```javascript
    // Move studies with delay between batches
    for (const study of studies) {
-     await moveScu.moveStudy(query, dest);
+     await moveScu.moveStudy({ query, moveDestination: dest });
      await new Promise(resolve => setTimeout(resolve, 100));
    }
    ```

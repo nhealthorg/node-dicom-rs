@@ -208,57 +208,58 @@ impl FindScu {
      * Execute a C-FIND query to search for DICOM entities.
      * 
      * Performs a DICOM C-FIND operation with the specified query parameters.
-     * Results are streamed via the `onResult` callback and also returned as an array.
+     * Results are streamed via callbacks and also returned as an array.
      * 
-     * @param query - Query parameters as key-value pairs (tag names or hex codes)
-     * @param queryModel - Query/Retrieve Information Model (optional, default: StudyRoot)
-     * @param onResult - Callback invoked for each matching result
-     * @param onCompleted - Callback invoked when query completes
+     * @param options - Configuration object containing query, queryModel, and callbacks
      * @returns Array of all matching results
      * @throws Error if query fails or connection cannot be established
      * 
      * @example
      * ```typescript
      * // Search for studies by patient name
-     * const results = await finder.find(
-     *   {
+     * const results = await finder.find({
+     *   query: {
      *     PatientName: 'DOE^JOHN',
      *     StudyDate: '20240101-',
      *     Modality: 'CT'
      *   },
-     *   'StudyRoot',
-     *   (err, result) => {
+     *   queryModel: 'StudyRoot',
+     *   onResult: (err, result) => {
      *     if (!err) {
      *       console.log('Study UID:', result.data?.StudyInstanceUID);
      *     }
+     *   },
+     *   onCompleted: (err, event) => {
+     *     console.log(`Found ${event.data?.totalResults} studies`);
      *   }
-     * );
+     * });
      * ```
      * 
      * @example
      * ```typescript
-     * // Wildcard query for all studies
+     * // Simple query without callbacks
      * const results = await finder.find({
-     *   StudyInstanceUID: '*',
-     *   PatientName: '',
-     *   StudyDate: '',
-     *   StudyDescription: ''
+     *   query: {
+     *     StudyInstanceUID: '*',
+     *     PatientName: '',
+     *     StudyDate: '',
+     *     StudyDescription: ''
+     *   }
      * });
      * ```
      */
-    #[napi]
+    #[napi(
+        ts_args_type = "options: { query: Record<string, string>, queryModel?: 'StudyRoot' | 'PatientRoot' | 'ModalityWorklist', onResult?: (err: Error | null, event: FindResultEvent) => void, onCompleted?: (err: Error | null, event: FindCompletedEvent) => void }"
+    )]
     pub fn find(
         &self,
-        query: Object,
-        query_model: Option<QueryModel>,
-        on_result: Option<ThreadsafeFunction<FindResultEvent, ()>>,
-        on_completed: Option<ThreadsafeFunction<FindCompletedEvent, ()>>,
+        options: Object,
     ) -> NapiResult<AsyncTask<FindScuHandler>> {
-        let query_model = query_model.unwrap_or(QueryModel::StudyRoot);
-        
-        // Extract query parameters from Object
+        // Extract query object
+        let query: Object = options
+            .get("query")?
+            .ok_or_else(|| napi::Error::from_reason("Missing required 'query' property"))?;
         let mut query_map: HashMap<String, String> = HashMap::new();
-        
         let keys = query.get_property_names()?;
         let len = keys.get_array_length()?;
         
@@ -268,6 +269,17 @@ impl FindScu {
                 query_map.insert(key, value);
             }
         }
+
+        // Extract other options
+        let query_model_str: Option<String> = options.get("queryModel")?;
+        let query_model = match query_model_str.as_deref() {
+            Some("PatientRoot") => QueryModel::PatientRoot,
+            Some("ModalityWorklist") => QueryModel::ModalityWorklist,
+            _ => QueryModel::StudyRoot, // Default
+        };
+        
+        let on_result: Option<ThreadsafeFunction<FindResultEvent, ()>> = options.get("onResult")?;
+        let on_completed: Option<ThreadsafeFunction<FindCompletedEvent, ()>> = options.get("onCompleted")?;
 
         Ok(AsyncTask::new(FindScuHandler {
             addr: self.addr.clone(),
@@ -289,8 +301,7 @@ impl FindScu {
      * a pre-built query with type-safe methods.
      * 
      * @param query - QueryBuilder instance with configured search criteria
-     * @param onResult - Callback invoked for each matching result
-     * @param onCompleted - Callback invoked when query completes
+     * @param callbacks - Optional callbacks for result and completion events
      * @returns Array of all matching results
      * @throws Error if query fails or connection cannot be established
      * 
@@ -302,21 +313,33 @@ impl FindScu {
      *   .modality("CT")
      *   .includeAllReturnAttributes();
      * 
-     * const results = await finder.findWithQuery(
-     *   query,
-     *   (err, result) => {
+     * const results = await finder.findWithQuery(query, {
+     *   onResult: (err, result) => {
      *     if (!err) console.log('Found:', result.data);
+     *   },
+     *   onCompleted: (err, event) => {
+     *     console.log(`Query complete: ${event.data?.totalResults} results`);
      *   }
-     * );
+     * });
      * ```
      */
-    #[napi]
+    #[napi(
+        ts_args_type = "query: QueryBuilder, callbacks?: { onResult?: (err: Error | null, event: FindResultEvent) => void, onCompleted?: (err: Error | null, event: FindCompletedEvent) => void }"
+    )]
     pub fn find_with_query(
         &self,
         query: &QueryBuilder,
-        on_result: Option<ThreadsafeFunction<FindResultEvent, ()>>,
-        on_completed: Option<ThreadsafeFunction<FindCompletedEvent, ()>>,
+        callbacks: Option<Object>,
     ) -> NapiResult<AsyncTask<FindScuHandler>> {
+        let (on_result, on_completed) = if let Some(cbs) = callbacks {
+            (
+                cbs.get::<ThreadsafeFunction<FindResultEvent, ()>>("onResult")?,
+                cbs.get::<ThreadsafeFunction<FindCompletedEvent, ()>>("onCompleted")?,
+            )
+        } else {
+            (None, None)
+        };
+
         Ok(AsyncTask::new(FindScuHandler {
             addr: self.addr.clone(),
             calling_ae_title: self.calling_ae_title.clone(),
