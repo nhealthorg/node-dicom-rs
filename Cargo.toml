@@ -1,7 +1,7 @@
 [package]
 edition = "2021"
 name = "node-dicom-rs"
-version = "0.2.0"
+version = "0.3.0"
 
 [lib]
 crate-type = ["cdylib"]
@@ -15,14 +15,14 @@ transcode = ["dep:dicom-pixeldata"]
 napi = { version = "3.8.2", default-features = false, features = ["napi8", "tokio_rt"] }
 napi-derive = { version = "3.5.1", features = ["type-def"] }
 clap = { version = "4.5.53", features = ["derive"] }
-dicom-dump = "=0.9.0"
-dicom-object = "=0.9.0"
-dicom-core = "0.9.0"
-dicom-ul = { version = "0.9.0", features = ["async"] }
-dicom-encoding = "0.9.0"
+dicom-dump = "=0.9.1"
+dicom-object = "=0.9.1"
+dicom-core = "0.9.1"
+dicom-ul = { version = "0.9.1", features = ["async"] }
+dicom-encoding = "0.9.1"
 dicom-dictionary-std = "0.9.0"
-dicom-transfer-syntax-registry = "0.9.0"
-dicom-pixeldata = { version = "0.9.0", optional = true}
+dicom-transfer-syntax-registry = "0.9.1"
+dicom-pixeldata = { version = "0.9.1", optional = true}
 dicom-json = "0.9.0"
 walkdir = "2.5.0"
 indicatif = "0.18.3"
