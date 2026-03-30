@@ -686,6 +686,50 @@ export declare class FindScu {
   findWithQuery(query: QueryBuilder, onResult?: (((err: Error | null, arg: FindResultEvent) => void)) | undefined | null, onCompleted?: (((err: Error | null, arg: FindCompletedEvent) => void)) | undefined | null): NapiResult<Promise<unknown>>
 }
 
+/**
+ * DICOM C-MOVE SCU (Service Class User) for retrieving studies/series/instances from a PACS
+ *
+ * # Example
+ *
+ * ```javascript
+ * const { MoveScu } = require('@nuxthealth/node-dicom');
+ *
+ * const moveScu = new MoveScu({
+ *     addr: '127.0.0.1:4242',
+ *     callingAeTitle: 'MY-SCU',
+ *     calledAeTitle: 'ORTHANC',
+ *     verbose: true
+ * });
+ *
+ * // Move a study to destination AE
+ * const result = await moveScu.move(
+ *     {
+ *         QueryRetrieveLevel: 'STUDY',
+ *         StudyInstanceUID: '1.2.3.4.5'
+ *     },
+ *     'DESTINATION-AE',
+ *     'StudyRoot'
+ * );
+ *
+ * console.log(`Moved ${result.completed} of ${result.total} instances`);
+ * ```
+ */
+export declare class MoveScu {
+  /** Create a new MoveScu instance */
+  constructor(options: MoveScuOptions)
+  /**
+   * Perform a C-MOVE operation
+   *
+   * @param query - Query parameters as key-value pairs (e.g., { StudyInstanceUID: '1.2.3', QueryRetrieveLevel: 'STUDY' })
+   * @param moveDestination - AE title of the destination for the move operation
+   * @param queryModel - Query model to use ('StudyRoot' or 'PatientRoot', default: 'StudyRoot')
+   * @param onSubOperation - Optional callback for sub-operation progress
+   * @param onCompleted - Optional callback when operation completes
+   * @returns Promise<MoveResult>
+   */
+  moveStudy(query: Record<string, string>, moveDestination: string, queryModel?: 'StudyRoot' | 'PatientRoot', onSubOperation?: (err: Error | null, event: MoveSubOperationEvent) => void, onCompleted?: (err: Error | null, event: MoveCompletedEvent) => void): Promise<unknown>
+}
+
 /** Builder for creating Instance-level DICOM JSON responses */
 export declare class QidoInstanceResult {
   constructor()
@@ -2218,6 +2262,76 @@ export interface InstanceHierarchyData {
   file: string
   /** Instance + Equipment level tags only */
   tags?: Record<string, string>
+}
+
+export interface MoveCompletedData {
+  /** Total number of sub-operations */
+  total: number
+  /** Number of completed sub-operations */
+  completed: number
+  /** Number of failed sub-operations */
+  failed: number
+  /** Number of warning sub-operations */
+  warning: number
+  /** Duration in seconds */
+  durationSeconds: number
+}
+
+/** Event emitted when the C-MOVE operation completes */
+export interface MoveCompletedEvent {
+  message: string
+  data?: MoveCompletedData
+}
+
+/** Query model for C-MOVE operations */
+export declare const enum MoveQueryModel {
+  /** Study Root Query/Retrieve Information Model - MOVE */
+  StudyRoot = 'StudyRoot',
+  /** Patient Root Query/Retrieve Information Model - MOVE */
+  PatientRoot = 'PatientRoot'
+}
+
+/** Result of a C-MOVE operation */
+export interface MoveResult {
+  /** Total number of sub-operations (instances to move) */
+  total: number
+  /** Number of completed sub-operations */
+  completed: number
+  /** Number of failed sub-operations */
+  failed: number
+  /** Number of warning sub-operations */
+  warning: number
+}
+
+/** Options for creating a MoveScu instance */
+export interface MoveScuOptions {
+  /** Address of the PACS server in format "AE@host:port" or "host:port" */
+  addr: string
+  /** Application Entity title of this SCU (default: "MOVE-SCU") */
+  callingAeTitle?: string
+  /** Application Entity title of the remote SCP (default: extracted from addr or "ANY-SCP") */
+  calledAeTitle?: string
+  /** Maximum PDU length (default: 16384) */
+  maxPduLength?: number
+  /** Enable verbose logging */
+  verbose?: boolean
+}
+
+export interface MoveSubOperationData {
+  /** Number of remaining sub-operations */
+  remaining: number
+  /** Number of completed sub-operations */
+  completed: number
+  /** Number of failed sub-operations */
+  failed: number
+  /** Number of warning sub-operations */
+  warning: number
+}
+
+/** Event emitted for each sub-operation (file being moved) */
+export interface MoveSubOperationEvent {
+  message: string
+  data?: MoveSubOperationData
 }
 
 /** Output format for pixel data */

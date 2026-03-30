@@ -7,6 +7,7 @@ High-performance Node.js bindings for DICOM (Digital Imaging and Communications 
 - **StoreScp**: Receive DICOM files over the network with C-STORE SCP server
 - **StoreScu**: Send DICOM files to remote PACS systems
 - **FindScu**: Query DICOM archives with C-FIND protocol (Study Root, Patient Root, Modality Worklist)
+- **MoveScu**: Retrieve studies from remote PACS using C-MOVE protocol (forward to destination AE)
 - **QueryBuilder**: Type-safe, fluent API for constructing DICOM queries without memorizing tag names
 - **DicomFile**: Read, parse, and manipulate DICOM files with full metadata extraction
 - **Storage Backends**: Filesystem and S3-compatible object storage support
@@ -218,6 +219,70 @@ For detailed documentation, see:
 - **[FindScu Guide](./docs/findscu.md)** - Complete C-FIND query documentation
 - **[QueryBuilder Guide](./docs/querybuilder.md)** - Type-safe query construction API
 
+### Retrieving DICOM Studies (MoveScu)
+
+Retrieve studies from remote PACS using C-MOVE protocol:
+
+```typescript
+import { MoveScu } from '@nuxthealth/node-dicom';
+
+const mover = new MoveScu({
+    addr: '192.168.1.100:4242',
+    callingAeTitle: 'MY-SCU',
+    calledAeTitle: 'ORTHANC',
+    verbose: true
+});
+
+// Move an entire study to a destination AE
+// Note: Destination AE must be configured in the source PACS
+const result = await mover.moveStudy(
+    {
+        StudyInstanceUID: '1.2.840.113619.2.55.3.4.1762893313.19303.1234567890.123',
+        QueryRetrieveLevel: 'STUDY'
+    },
+    'DESTINATION_AE',  // AE title where instances should be sent
+    'StudyRoot',       // Optional: Query model (default: 'StudyRoot')
+    (err, event) => {  // Optional: Progress callback
+        if (err) return;
+        const progress = (event.completed / event.total * 100).toFixed(1);
+        console.log(`Progress: ${event.completed}/${event.total} (${progress}%)`);
+    },
+    (err, event) => {  // Optional: Completion callback
+        if (err) return;
+        console.log(`Completed in ${event.durationMs}ms`);
+    }
+);
+
+console.log(`Moved ${result.completed} of ${result.total} instances`);
+if (result.failed > 0) {
+    console.error(`${result.failed} instances failed to move`);
+}
+
+// Move specific series
+await mover.moveStudy(
+    {
+        StudyInstanceUID: '1.2.3.4.5',
+        SeriesInstanceUID: '1.2.3.4.5.6',
+        QueryRetrieveLevel: 'SERIES'
+    },
+    'DESTINATION_AE'
+);
+
+// Move all patient studies
+await mover.moveStudy(
+    {
+        PatientID: 'PAT12345',
+        QueryRetrieveLevel: 'PATIENT'
+    },
+    'DESTINATION_AE',
+    'PatientRoot'
+);
+```
+
+**Important**: C-MOVE requires the destination AE title to be configured in the source PACS. For Orthanc, add the destination to the `DicomModalities` section in the configuration.
+
+For complete documentation, see the **[MoveScu Guide](./docs/movescu.md)**
+
 ### DICOMweb Services
 
 node-dicom-rs provides DICOMweb servers for querying and retrieving DICOM objects over HTTP.
@@ -281,6 +346,7 @@ For detailed documentation, see:
 - **[StoreScp Guide](./docs/storescp.md)** - Receiving DICOM files, tag extraction, storage backends, async tag modification
 - **[StoreScu Guide](./docs/storescu.md)** - Sending DICOM files, transfer syntaxes, batch operations
 - **[FindScu Guide](./docs/findscu.md)** - Querying DICOM archives with C-FIND, query models, callbacks
+- **[MoveScu Guide](./docs/movescu.md)** - Retrieving studies with C-MOVE, progress tracking, destination configuration
 - **[QueryBuilder Guide](./docs/querybuilder.md)** - Type-safe query construction with fluent API
 - **[DicomFile Guide](./docs/dicomfile.md)** - Reading files, extracting metadata, pixel data operations
 - **[QIDO-RS Guide](./docs/qido-rs.md)** - Query service for searching DICOM studies, series, and instances

@@ -578,6 +578,7 @@ if (!nativeBinding) {
 module.exports = nativeBinding
 module.exports.DicomFile = nativeBinding.DicomFile
 module.exports.FindScu = nativeBinding.FindScu
+module.exports.MoveScu = nativeBinding.MoveScu
 module.exports.QidoInstanceResult = nativeBinding.QidoInstanceResult
 module.exports.QidoSeriesResult = nativeBinding.QidoSeriesResult
 module.exports.QidoServer = nativeBinding.QidoServer
@@ -597,6 +598,7 @@ module.exports.getAvailableTagNames = nativeBinding.getAvailableTagNames
 module.exports.getCommonSopClasses = nativeBinding.getCommonSopClasses
 module.exports.getCommonTagSets = nativeBinding.getCommonTagSets
 module.exports.getCommonTransferSyntaxes = nativeBinding.getCommonTransferSyntaxes
+module.exports.MoveQueryModel = nativeBinding.MoveQueryModel
 module.exports.PixelDataFormat = nativeBinding.PixelDataFormat
 module.exports.QueryModel = nativeBinding.QueryModel
 module.exports.ResultStatus = nativeBinding.ResultStatus
