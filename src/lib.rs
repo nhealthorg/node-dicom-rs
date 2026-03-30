@@ -3,6 +3,7 @@
 pub mod storescu;
 pub mod object;
 pub mod storescp;
+pub mod findscu;
 pub mod utils;
 pub mod web;
 

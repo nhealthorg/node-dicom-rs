@@ -534,6 +534,158 @@ export declare class DicomFile {
   close(): void
 }
 
+/** * DICOM Find SCU (C-FIND) Client
+ *
+ * Performs DICOM C-FIND queries to search for studies, patients, or modality worklist entries
+ * in a DICOM archive. Supports the following query/retrieve information models:
+ *
+ * - **Study Root** (default): Query/retrieve studies
+ * - **Patient Root**: Query/retrieve patients
+ * - **Modality Worklist**: Query scheduled procedures
+ *
+ * ## Features
+ * - Multiple query/retrieve information models
+ * - Flexible query syntax using tag names or hex codes
+ * - Event-driven result streaming
+ * - Support for wildcards in queries
+ * - Automatic query level inference
+ *
+ * ## Usage
+ *
+ * @example
+ * ```typescript
+ * import { FindScu } from '@nuxthealth/node-dicom';
+ *
+ * // Basic study search
+ * const finder = new FindScu({
+ *   addr: 'PACS@192.168.1.100:104',
+ *   calling_ae_title: 'MY-WORKSTATION'
+ * });
+ *
+ * const results = await finder.find({
+ *   query: {
+ *     PatientName: 'DOE^JOHN',
+ *     StudyDate: '20240101-20240131',
+ *     Modality: 'CT'
+ *   },
+ *   onResult: (err, result) => {
+ *     console.log('Found study:', result.data?.StudyInstanceUID);
+ *   }
+ * });
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Patient root query
+ * const results = await finder.find({
+ *   queryModel: 'PatientRoot',
+ *   query: {
+ *     PatientID: 'PAT123',
+ *     PatientBirthDate: '19900101'
+ *   }
+ * });
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Modality worklist query
+ * const results = await finder.find({
+ *   queryModel: 'ModalityWorklist',
+ *   query: {
+ *     'ScheduledProcedureStepSequence.Modality': 'MR',
+ *     'ScheduledProcedureStepSequence.ScheduledProcedureStepStartDate': '20240315'
+ *   }
+ * });
+ * ```
+ */
+export declare class FindScu {
+  /** * Create a new DICOM Find SCU client instance.
+   *
+   * @param options - Client configuration options
+   * @returns New FindScu instance
+   *
+   * @example
+   * ```typescript
+   * const finder = new FindScu({
+   *   addr: 'PACS@192.168.1.100:104',
+   *   calling_ae_title: 'MY-SCU',
+   *   verbose: true
+   * });
+   * ```
+   */
+  constructor(options: FindScuOptions)
+  /** * Execute a C-FIND query to search for DICOM entities.
+   *
+   * Performs a DICOM C-FIND operation with the specified query parameters.
+   * Results are streamed via the `onResult` callback and also returned as an array.
+   *
+   * @param query - Query parameters as key-value pairs (tag names or hex codes)
+   * @param queryModel - Query/Retrieve Information Model (optional, default: StudyRoot)
+   * @param onResult - Callback invoked for each matching result
+   * @param onCompleted - Callback invoked when query completes
+   * @returns Array of all matching results
+   * @throws Error if query fails or connection cannot be established
+   *
+   * @example
+   * ```typescript
+   * // Search for studies by patient name
+   * const results = await finder.find(
+   *   {
+   *     PatientName: 'DOE^JOHN',
+   *     StudyDate: '20240101-',
+   *     Modality: 'CT'
+   *   },
+   *   'StudyRoot',
+   *   (err, result) => {
+   *     if (!err) {
+   *       console.log('Study UID:', result.data?.StudyInstanceUID);
+   *     }
+   *   }
+   * );
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Wildcard query for all studies
+   * const results = await finder.find({
+   *   StudyInstanceUID: '*',
+   *   PatientName: '',
+   *   StudyDate: '',
+   *   StudyDescription: ''
+   * });
+   * ```
+   */
+  find(query: object, queryModel?: QueryModel | undefined | null, onResult?: (((err: Error | null, arg: FindResultEvent) => void)) | undefined | null, onCompleted?: (((err: Error | null, arg: FindCompletedEvent) => void)) | undefined | null): NapiResult<Promise<unknown>>
+  /** * Execute a C-FIND query using a QueryBuilder.
+   *
+   * This is a more intuitive alternative to the `find()` method that accepts
+   * a pre-built query with type-safe methods.
+   *
+   * @param query - QueryBuilder instance with configured search criteria
+   * @param onResult - Callback invoked for each matching result
+   * @param onCompleted - Callback invoked when query completes
+   * @returns Array of all matching results
+   * @throws Error if query fails or connection cannot be established
+   *
+   * @example
+   * ```typescript
+   * const query = QueryBuilder.study()
+   *   .patientName("DOE^JOHN")
+   *   .studyDateRange("20240101", "20240131")
+   *   .modality("CT")
+   *   .includeAllReturnAttributes();
+   *
+   * const results = await finder.findWithQuery(
+   *   query,
+   *   (err, result) => {
+   *     if (!err) console.log('Found:', result.data);
+   *   }
+   * );
+   * ```
+   */
+  findWithQuery(query: QueryBuilder, onResult?: (((err: Error | null, arg: FindResultEvent) => void)) | undefined | null, onCompleted?: (((err: Error | null, arg: FindCompletedEvent) => void)) | undefined | null): NapiResult<Promise<unknown>>
+}
+
 /** Builder for creating Instance-level DICOM JSON responses */
 export declare class QidoInstanceResult {
   constructor()
@@ -693,6 +845,235 @@ export declare class QidoStudyResult {
   modalitiesInStudy(value: string): this
   numberOfStudyRelatedSeries(value: string): this
   numberOfStudyRelatedInstances(value: string): this
+}
+
+/** * Fluent query builder for DICOM C-FIND operations.
+ *
+ * Provides a type-safe, intuitive interface for building DICOM queries
+ * without needing to know exact DICOM tag names.
+ *
+ * @example
+ * ```typescript
+ * // Study query with patient name and date range
+ * const query = QueryBuilder.study()
+ *   .patientName("DOE^JOHN")
+ *   .studyDateRange("20240101", "20240131")
+ *   .modality("CT")
+ *   .studyDescription("*Abdomen*");
+ *
+ * const results = await finder.findWithQuery(query);
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Patient query
+ * const query = QueryBuilder.patient()
+ *   .patientId("PAT12345")
+ *   .patientBirthDate("19900101")
+ *   .patientSex("M");
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Modality worklist query
+ * const query = QueryBuilder.modalityWorklist()
+ *   .scheduledStationAeTitle("CT1")
+ *   .scheduledProcedureStepStartDate("20240315");
+ * ```
+ */
+export declare class QueryBuilder {
+  /** * Create a new Study Root query builder.
+   *
+   * Use this for searching studies in the PACS.
+   *
+   * @returns New query builder configured for Study Root queries
+   */
+  static study(): QueryBuilder
+  /** * Create a new Patient Root query builder.
+   *
+   * Use this for searching patients in the PACS.
+   *
+   * @returns New query builder configured for Patient Root queries
+   */
+  static patient(): QueryBuilder
+  /** * Create a new Modality Worklist query builder.
+   *
+   * Use this for searching scheduled procedures.
+   *
+   * @returns New query builder configured for Modality Worklist queries
+   */
+  static modalityWorklist(): QueryBuilder
+  /** * Filter by patient name.
+   *
+   * Supports DICOM wildcards: * (any characters) and ? (single character)
+   * Use ^ to separate name components: "LastName^FirstName^MiddleName"
+   *
+   * @param name - Patient name or pattern
+   * @example query.patientName("DOE^JOHN")
+   * @example query.patientName("DOE^*") // All patients with last name DOE
+   */
+  patientName(name: string): this
+  /** * Filter by patient ID.
+   *
+   * @param id - Patient identifier
+   * @example query.patientId("PAT12345")
+   */
+  patientId(id: string): this
+  /** * Filter by patient birth date.
+   *
+   * Format: YYYYMMDD
+   *
+   * @param date - Birth date in DICOM format
+   * @example query.patientBirthDate("19900115")
+   */
+  patientBirthDate(date: string): this
+  /** * Filter by patient sex.
+   *
+   * @param sex - M (male), F (female), O (other), or empty
+   * @example query.patientSex("M")
+   */
+  patientSex(sex: string): this
+  /** * Filter by study instance UID.
+   *
+   * @param uid - Study Instance UID
+   * @example query.studyInstanceUid("1.2.840.113619.2.55.3.1")
+   */
+  studyInstanceUid(uid: string): this
+  /** * Filter by study date.
+   *
+   * Format: YYYYMMDD
+   *
+   * @param date - Study date in DICOM format
+   * @example query.studyDate("20240115")
+   */
+  studyDate(date: string): this
+  /** * Filter by study date range.
+   *
+   * Format: YYYYMMDD-YYYYMMDD
+   *
+   * @param start - Start date (YYYYMMDD)
+   * @param end - End date (YYYYMMDD)
+   * @example query.studyDateRange("20240101", "20240131")
+   */
+  studyDateRange(start: string, end: string): this
+  /** * Filter by study date from a specific date onwards.
+   *
+   * @param start - Start date (YYYYMMDD)
+   * @example query.studyDateFrom("20240101") // All studies from Jan 1, 2024
+   */
+  studyDateFrom(start: string): this
+  /** * Filter by study date up to a specific date.
+   *
+   * @param end - End date (YYYYMMDD)
+   * @example query.studyDateTo("20240131") // All studies until Jan 31, 2024
+   */
+  studyDateTo(end: string): this
+  /** * Filter by study time.
+   *
+   * Format: HHMMSS or HHMMSS.FFFFFF
+   *
+   * @param time - Study time in DICOM format
+   * @example query.studyTime("143000")
+   */
+  studyTime(time: string): this
+  /** * Filter by accession number.
+   *
+   * @param number - Accession number
+   * @example query.accessionNumber("ACC123456")
+   */
+  accessionNumber(number: string): this
+  /** * Filter by study description.
+   *
+   * Supports wildcards: * and ?
+   *
+   * @param description - Study description or pattern
+   * @example query.studyDescription("*CT*Abdomen*")
+   */
+  studyDescription(description: string): this
+  /** * Filter by study ID.
+   *
+   * @param id - Study ID
+   * @example query.studyId("STUDY001")
+   */
+  studyId(id: string): this
+  /** * Filter by modality.
+   *
+   * Common values: CT, MR, US, XA, DX, CR, MG, PT, NM, etc.
+   *
+   * @param modality - Modality code
+   * @example query.modality("CT")
+   */
+  modality(modality: string): this
+  /** * Filter by referring physician name.
+   *
+   * Use ^ to separate name components: "LastName^FirstName"
+   *
+   * @param name - Referring physician name
+   * @example query.referringPhysicianName("SMITH^JOHN")
+   */
+  referringPhysicianName(name: string): this
+  /** * Filter by series instance UID.
+   *
+   * @param uid - Series Instance UID
+   * @example query.seriesInstanceUid("1.2.840.113619.2.55.3.1.1")
+   */
+  seriesInstanceUid(uid: string): this
+  /** * Filter by series number.
+   *
+   * @param number - Series number
+   * @example query.seriesNumber("1")
+   */
+  seriesNumber(number: string): this
+  /** * Filter by series description.
+   *
+   * @param description - Series description
+   * @example query.seriesDescription("Axial 5mm")
+   */
+  seriesDescription(description: string): this
+  /** * Filter by scheduled station AE title.
+   *
+   * @param ae - Station AE title where procedure is scheduled
+   * @example query.scheduledStationAeTitle("CT1")
+   */
+  scheduledStationAeTitle(ae: string): this
+  /** * Filter by scheduled procedure step start date.
+   *
+   * Format: YYYYMMDD
+   *
+   * @param date - Scheduled start date
+   * @example query.scheduledProcedureStepStartDate("20240315")
+   */
+  scheduledProcedureStepStartDate(date: string): this
+  /** * Filter by scheduled procedure step start time.
+   *
+   * Format: HHMMSS
+   *
+   * @param time - Scheduled start time
+   * @example query.scheduledProcedureStepStartTime("143000")
+   */
+  scheduledProcedureStepStartTime(time: string): this
+  /** * Filter by scheduled performing physician name.
+   *
+   * @param name - Physician name
+   * @example query.scheduledPerformingPhysicianName("SMITH^JOHN")
+   */
+  scheduledPerformingPhysicianName(name: string): this
+  /** * Include all standard return attributes for the query level.
+   *
+   * This adds empty values for common DICOM attributes to ensure
+   * they are returned in the C-FIND response.
+   */
+  includeAllReturnAttributes(): this
+  /** * Get the query model for this builder.
+   *
+   * @returns The query/retrieve information model
+   */
+  get queryModel(): QueryModel
+  /** * Get the query parameters as a JavaScript object.
+   *
+   * @returns Query parameters
+   */
+  get params(): Record<string, string>
 }
 
 /** DICOM C-STORE SCP */
@@ -1547,6 +1928,47 @@ export interface FileSentEvent {
   data?: FileSentData
 }
 
+export interface FindCompletedData {
+  totalResults: number
+  durationSeconds: number
+}
+
+/** * Event emitted when C-FIND query completes.
+ */
+export interface FindCompletedEvent {
+  message: string
+  data?: FindCompletedData
+}
+
+/** * Individual C-FIND query result.
+ */
+export interface FindResult {
+  /** DICOM attributes as key-value pairs */
+  attributes: Record<string, string>
+}
+
+/** * Event emitted for each C-FIND result.
+ */
+export interface FindResultEvent {
+  message: string
+  data?: Record<string, string>
+}
+
+/** * Options for configuring a DICOM Find SCU client.
+ */
+export interface FindScuOptions {
+  /** Address of the Find SCP, optionally with AE title (e.g., "FIND-SCP@127.0.0.1:104" or "192.168.1.100:104") */
+  addr: string
+  /** Calling Application Entity title for this SCU (default: "FIND-SCU") */
+  callingAeTitle?: string
+  /** Called Application Entity title, overrides AE title in address if present (default: "ANY-SCP") */
+  calledAeTitle?: string
+  /** Maximum PDU length in bytes, range 4096-131072 (default: 16384) */
+  maxPduLength?: number
+  /** Enable verbose logging (default: false) */
+  verbose?: boolean
+}
+
 /** * Get a comprehensive list of 300+ commonly used DICOM tag names.
  *
  * Returns an array of standard DICOM tag names covering all major
@@ -1897,6 +2319,19 @@ export interface QidoServerConfig {
   corsAllowedOrigins?: string
   /** Enable verbose logging for debugging */
   verbose?: boolean
+}
+
+/** * Query/Retrieve Information Model types for C-FIND operations.
+ *
+ * Determines which DICOM information model to use for the query.
+ */
+export declare const enum QueryModel {
+  /** Study Root Query/Retrieve Information Model (default) */
+  StudyRoot = 'StudyRoot',
+  /** Patient Root Query/Retrieve Information Model */
+  PatientRoot = 'PatientRoot',
+  /** Modality Worklist Information Model */
+  ModalityWorklist = 'ModalityWorklist'
 }
 
 /** * Result of a DICOM transfer operation.

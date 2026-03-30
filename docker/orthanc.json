@@ -1,0 +1,28 @@
+{
+  "Name": "OrthancTest",
+  "DicomAet": "ORTHANC",
+  "DicomPort": 4242,
+  
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": false,
+  "RegisteredUsers": {
+    "orthanc": "orthanc"
+  },
+  
+  "DicomModalities": {
+    "FINDSCU": ["FINDSCU", "172.18.0.1", 11112],
+    "DEMO-SCU": ["DEMO-SCU", "172.18.0.1", 11112],
+    "STORE-SCU": ["STORE-SCU", "172.18.0.1", 11112]
+  },
+  
+  "UnknownSopClassAccepted": true,
+  
+  "DicomAlwaysAllowEcho": true,
+  "DicomAlwaysAllowFind": true,
+  "DicomAlwaysAllowGet": true,
+  "DicomAlwaysAllowMove": true,
+  "DicomAlwaysAllowStore": true,
+  
+  "DicomCheckCalledAet": false,
+  "DicomCheckModalityHost": false
+}

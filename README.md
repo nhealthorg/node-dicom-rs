@@ -6,6 +6,8 @@ High-performance Node.js bindings for DICOM (Digital Imaging and Communications 
 
 - **StoreScp**: Receive DICOM files over the network with C-STORE SCP server
 - **StoreScu**: Send DICOM files to remote PACS systems
+- **FindScu**: Query DICOM archives with C-FIND protocol (Study Root, Patient Root, Modality Worklist)
+- **QueryBuilder**: Type-safe, fluent API for constructing DICOM queries without memorizing tag names
 - **DicomFile**: Read, parse, and manipulate DICOM files with full metadata extraction
 - **Storage Backends**: Filesystem and S3-compatible object storage support
 - **TypeScript Support**: Full TypeScript definitions with autocomplete for 300+ DICOM tags
@@ -170,6 +172,52 @@ await file.saveAsDicom('anonymized.dcm');
 file.close();
 ```
 
+### Querying DICOM Archives (FindScu)
+
+Query remote PACS systems using DICOM C-FIND protocol:
+
+```typescript
+import { FindScu, QueryBuilder } from '@nuxthealth/node-dicom';
+
+const finder = new FindScu({
+    addr: '192.168.1.100:4242',
+    callingAeTitle: 'MY-SCU',
+    calledAeTitle: 'ORTHANC',
+    verbose: true
+});
+
+// Type-safe queries with QueryBuilder (recommended)
+const query = QueryBuilder.study()
+    .patientName('DOE^*')                      // Wildcard search
+    .studyDateRange('20240101', '20240331')    // Q1 2024
+    .modality('CT')                            // CT scans only
+    .includeAllReturnAttributes();             // Include all standard fields
+
+const results = await finder.findWithQuery(query);
+
+console.log(`Found ${results.length} studies`);
+results.forEach(result => {
+    const attrs = result.attributes;
+    console.log(`Patient: ${attrs.PatientName} (${attrs.PatientID})`);
+    console.log(`Study: ${attrs.StudyDescription} - ${attrs.StudyDate}`);
+    console.log(`UID: ${attrs.StudyInstanceUID}`);
+});
+
+// Or use manual queries for flexibility
+const results2 = await finder.find(
+    {
+        PatientID: 'PAT12345',
+        StudyDate: '20240101-20240131',
+        Modality: 'CT'
+    },
+    'StudyRoot'
+);
+```
+
+For detailed documentation, see:
+- **[FindScu Guide](./docs/findscu.md)** - Complete C-FIND query documentation
+- **[QueryBuilder Guide](./docs/querybuilder.md)** - Type-safe query construction API
+
 ### DICOMweb Services
 
 node-dicom-rs provides DICOMweb servers for querying and retrieving DICOM objects over HTTP.
@@ -232,6 +280,8 @@ For detailed documentation, see:
 
 - **[StoreScp Guide](./docs/storescp.md)** - Receiving DICOM files, tag extraction, storage backends, async tag modification
 - **[StoreScu Guide](./docs/storescu.md)** - Sending DICOM files, transfer syntaxes, batch operations
+- **[FindScu Guide](./docs/findscu.md)** - Querying DICOM archives with C-FIND, query models, callbacks
+- **[QueryBuilder Guide](./docs/querybuilder.md)** - Type-safe query construction with fluent API
 - **[DicomFile Guide](./docs/dicomfile.md)** - Reading files, extracting metadata, pixel data operations
 - **[QIDO-RS Guide](./docs/qido-rs.md)** - Query service for searching DICOM studies, series, and instances
 - **[WADO-RS Guide](./docs/wado-rs.md)** - Retrieval service for accessing DICOM objects over HTTP

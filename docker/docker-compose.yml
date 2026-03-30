@@ -12,8 +12,14 @@ services:
       - ORTHANC_PASSWORD=orthanc
       - DICOM_WEB_ENABLED=true
       - VERBOSE_ENABLED=true
+      - DICOM_ALWAYS_ALLOW_FIND=true
+      - DICOM_ALWAYS_ALLOW_ECHO=true
+      - DICOM_ALWAYS_ALLOW_STORE=true
+      - DICOM_CHECK_CALLED_AET=false
+      - DICOM_CHECK_MODALITY_HOST=false
     volumes:
       - orthanc_data:/var/lib/orthanc/db
+      - ./orthanc.json:/etc/orthanc/orthanc.json:ro
     restart: unless-stopped
   
   #s3-versitygw:
