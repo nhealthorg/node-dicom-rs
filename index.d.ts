@@ -2065,6 +2065,18 @@ export interface FindScuOptions {
   verbose?: boolean
 }
 
+/** Connection config for forwarding received DICOM instances to another PACS via C-STORE. */
+export interface ForwardTargetConfig {
+  /** Address of the destination PACS in format "host:port" or "AE@host:port" */
+  addr: string
+  /** Calling AE title for the forward association (default: "FORWARD-SCU") */
+  callingAeTitle?: string
+  /** Called AE title on the destination PACS (default: extracted from addr or "ANY-SCP") */
+  calledAeTitle?: string
+  /** Maximum PDU length (default: 16384) */
+  maxPduLength?: number
+}
+
 /** * Get a comprehensive list of 300+ commonly used DICOM tag names.
  *
  * Returns an array of standard DICOM tag names covering all major
@@ -2363,6 +2375,10 @@ export interface GetScuOptions {
   storageBackend?: GetStorageBackend
   /** S3 configuration (required when storageBackend is S3) */
   s3Config?: S3Config
+  /** Forward target configuration (required when storageBackend is Forward) */
+  forwardTarget?: ForwardTargetConfig
+  /** If true, fail C-GET when forwarding a received instance fails */
+  strictForward?: boolean
 }
 
 /** Storage backend type for received DICOM files */
@@ -2370,7 +2386,9 @@ export declare const enum GetStorageBackend {
   /** Store files on local filesystem */
   Filesystem = 'Filesystem',
   /** Store files in S3-compatible object storage */
-  S3 = 'S3'
+  S3 = 'S3',
+  /** Forward received instances directly to another PACS via C-STORE (no disk write) */
+  Forward = 'Forward'
 }
 
 export interface GetSubOperationData {
@@ -2386,6 +2404,12 @@ export interface GetSubOperationData {
   file?: string
   /** SOP Instance UID of current file */
   sopInstanceUid?: string
+  /** Destination PACS address when Forward backend is used */
+  forwardedTo?: string
+  /** Forward status when Forward backend is used: "ok" or "error" */
+  forwardStatus?: string
+  /** Forward error details when Forward backend is used */
+  forwardError?: string
 }
 
 /** Event emitted for each sub-operation (file being retrieved) */

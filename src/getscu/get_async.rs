@@ -324,6 +324,11 @@ async fn store_dicom_file(
 
             Ok(format!("s3://{}/{}", bucket.name(), key))
         }
+        GetStorageBackend::Forward => {
+            Err(GetScuError::Other {
+                message: "Forward backend is handled in the C-STORE receive loop".to_string(),
+            })
+        }
     }
 }
 
@@ -359,8 +364,31 @@ pub async fn run_get(
         None
     };
 
-    // Build association options with storage SOP classes for receiving C-STORE
+    // Open a persistent forward association if the Forward backend is selected.
+    // We establish it before starting the C-GET so all received instances share
+    // a single connection to the destination PACS.
     let storage_sop_classes = get_storage_sop_classes();
+
+    let mut forward_assoc: Option<crate::utils::ForwardAssociation> = None;
+    if args.storage_backend == GetStorageBackend::Forward {
+        let target = args.forward_target.as_ref().ok_or_else(|| GetScuError::Other {
+            message: "Forward backend requires forwardTarget configuration".to_string(),
+        })?;
+        if args.verbose {
+            println!("Opening forward association to {}", target.addr);
+        }
+        let assoc = crate::utils::open_forward_association(target, &storage_sop_classes)
+            .await
+            .map_err(|e| GetScuError::Other {
+                message: format!("Failed to open forward association: {}", e),
+            })?;
+        forward_assoc = Some(assoc);
+        if args.verbose {
+            println!("Forward association established to {}", target.addr);
+        }
+    }
+
+    // Build association options with storage SOP classes for receiving C-STORE
     let mut client_opts = ClientAssociationOptions::new()
         .calling_ae_title(&args.calling_ae_title)
         .called_ae_title(called_ae_title)
@@ -587,6 +615,9 @@ pub async fn run_get(
                                                             warning,
                                                             file: None,
                                                             sop_instance_uid: None,
+                                                            forwarded_to: None,
+                                                            forward_status: None,
+                                                            forward_error: None,
                                                         }),
                                                     }),
                                                     ThreadsafeFunctionCallMode::Blocking,
@@ -666,59 +697,125 @@ pub async fn run_get(
                                         })?;
 
                                     // Find transfer syntax for this presentation context
-                                    let ts = scu
+                                    // Clone the TS string to avoid borrow conflicts with
+                                    // the later scu.send() call.
+                                    let ts_uid: String = scu
                                         .presentation_contexts()
                                         .iter()
                                         .find(|pc| pc.id == pc_id)
-                                        .map(|pc| &pc.transfer_syntax)
+                                        .map(|pc| pc.transfer_syntax.clone())
                                         .ok_or_else(|| GetScuError::Other {
                                             message: "Presentation context not found".to_string(),
                                         })?;
 
-                                    let ts_obj = TransferSyntaxRegistry
-                                        .get(ts)
-                                        .ok_or_else(|| GetScuError::Other {
-                                            message: format!("Unknown transfer syntax: {}", ts),
-                                        })?;
+                                    // Store or forward the received instance.
+                                    let mut file_path: Option<String> = None;
+                                    let mut forwarded_to: Option<String> = None;
+                                    let mut forward_status: Option<String> = None;
+                                    let mut forward_error: Option<String> = None;
+                                    let mut store_rsp_status: u16 = 0x0000;
 
-                                    // Parse received DICOM dataset
-                                    let dataset = InMemDicomObject::read_dataset_with_ts(
-                                        &pending_data[..],
-                                        ts_obj,
-                                    )
-                                    .map_err(|e| GetScuError::Other {
-                                        message: format!("Failed to parse dataset: {}", e),
-                                    })?;
+                                    match &args.storage_backend {
+                                        GetStorageBackend::Forward => {
+                                            let target =
+                                                args.forward_target.as_ref().ok_or_else(|| {
+                                                    GetScuError::Other {
+                                                        message: "Forward backend requires \
+                                                                  forwardTarget configuration"
+                                                            .to_string(),
+                                                    }
+                                                })?;
+                                            forwarded_to = Some(target.addr.clone());
+                                            let fwd =
+                                                forward_assoc.as_mut().ok_or_else(|| {
+                                                    GetScuError::Other {
+                                                        message: "Forward association not open"
+                                                            .to_string(),
+                                                    }
+                                                })?;
+                                            match crate::utils::forward_dicom_bytes(
+                                                fwd,
+                                                &sop_class_uid,
+                                                &sop_instance_uid,
+                                                &ts_uid,
+                                                &pending_data,
+                                                store_message_id,
+                                                args.verbose,
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    forward_status = Some("ok".to_string());
+                                                }
+                                                Err(e) => {
+                                                    let err = e.to_string();
+                                                    if args.verbose {
+                                                        println!(
+                                                            "Forward to {} failed: {}",
+                                                            target.addr, err
+                                                        );
+                                                    }
+                                                    forward_status = Some("error".to_string());
+                                                    forward_error = Some(err);
+                                                    if args.strict_forward {
+                                                        // Refused: Out of resources
+                                                        store_rsp_status = 0xA700;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            let ts_obj = TransferSyntaxRegistry
+                                                .get(&ts_uid)
+                                                .ok_or_else(|| GetScuError::Other {
+                                                    message: format!(
+                                                        "Unknown transfer syntax: {}",
+                                                        ts_uid
+                                                    ),
+                                                })?;
 
-                                    // Create file meta information
-                                    use dicom_object::FileMetaTableBuilder;
-                                    let meta = FileMetaTableBuilder::new()
-                                        .media_storage_sop_class_uid(&sop_class_uid)
-                                        .media_storage_sop_instance_uid(&sop_instance_uid)
-                                        .transfer_syntax(ts)
-                                        .build()
-                                        .map_err(|e| GetScuError::Other {
-                                            message: format!("Failed to build meta: {}", e),
-                                        })?;
+                                            // Parse received DICOM dataset
+                                            let dataset = InMemDicomObject::read_dataset_with_ts(
+                                                &pending_data[..],
+                                                ts_obj,
+                                            )
+                                            .map_err(|e| GetScuError::Other {
+                                                message: format!("Failed to parse dataset: {}", e),
+                                            })?;
 
-                                    let dicom_file = dataset.with_exact_meta(meta);
+                                            // Create file meta information
+                                            use dicom_object::FileMetaTableBuilder;
+                                            let meta = FileMetaTableBuilder::new()
+                                                .media_storage_sop_class_uid(&sop_class_uid)
+                                                .media_storage_sop_instance_uid(&sop_instance_uid)
+                                                .transfer_syntax(&ts_uid)
+                                                .build()
+                                                .map_err(|e| GetScuError::Other {
+                                                    message: format!(
+                                                        "Failed to build meta: {}",
+                                                        e
+                                                    ),
+                                                })?;
 
-                                    // Store the file
-                                    let file_path = store_dicom_file(
-                                        &dicom_file,
-                                        &args.storage_backend,
-                                        &args.out_dir,
-                                        &s3_bucket,
-                                        args.verbose,
-                                    )
-                                    .await?;
+                                            let dicom_file = dataset.with_exact_meta(meta);
+
+                                            file_path = Some(store_dicom_file(
+                                                &dicom_file,
+                                                &args.storage_backend,
+                                                &args.out_dir,
+                                                &s3_bucket,
+                                                args.verbose,
+                                            )
+                                            .await?);
+                                        }
+                                    }
 
                                     // Send C-STORE-RSP (success)
                                     let store_rsp = store_rsp_command(
                                         &sop_class_uid,
                                         &sop_instance_uid,
                                         store_message_id,
-                                        0x0000, // Success
+                                        store_rsp_status,
                                     );
 
                                     let mut rsp_data = Vec::new();
@@ -745,20 +842,39 @@ pub async fn run_get(
                                     if let Some(ref callback) = callbacks.on_sub_operation {
                                         let remaining = total.saturating_sub(completed + failed + warning);
                                         if total > 0 || completed > 0 || failed > 0 || warning > 0 {
+                                            let message = match (&args.storage_backend, forward_status.as_deref()) {
+                                                (GetStorageBackend::Forward, Some("ok")) => "File forwarded".to_string(),
+                                                (GetStorageBackend::Forward, Some("error")) => "Forward failed".to_string(),
+                                                _ => "File received and stored".to_string(),
+                                            };
                                             callback.call(
                                                 Ok(GetSubOperationEvent {
-                                                    message: "File received and stored".to_string(),
+                                                    message,
                                                     data: Some(GetSubOperationData {
                                                         remaining,
                                                         completed,
                                                         failed,
                                                         warning,
-                                                        file: Some(file_path),
-                                                        sop_instance_uid: Some(sop_instance_uid),
+                                                        file: file_path,
+                                                        sop_instance_uid: Some(sop_instance_uid.clone()),
+                                                        forwarded_to,
+                                                        forward_status,
+                                                        forward_error: forward_error.clone(),
                                                     }),
                                                 }),
                                                 ThreadsafeFunctionCallMode::Blocking,
                                             );
+                                        }
+                                    }
+
+                                    if args.strict_forward {
+                                        if let Some(err) = forward_error {
+                                            return Err(GetScuError::GetFailed {
+                                                message: format!(
+                                                    "Strict forward failed for instance {}: {}",
+                                                    sop_instance_uid, err
+                                                ),
+                                            });
                                         }
                                     }
 
@@ -790,6 +906,14 @@ pub async fn run_get(
     }
 
     // Release association
+    // Release the forward association (best-effort) before the source association.
+    if let Some(fwd) = forward_assoc {
+        if args.verbose {
+            println!("Releasing forward association");
+        }
+        let _ = fwd.release().await;
+    }
+
     scu.release()
         .await
         .map_err(|e| GetScuError::Other {

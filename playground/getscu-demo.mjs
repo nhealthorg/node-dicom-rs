@@ -61,6 +61,12 @@ async function runFilesystemExample(studyInstanceUid) {
             if (event.data.file) {
                 console.log(`  Stored: ${event.data.file}`);
             }
+            if (event.data.forwardStatus) {
+                console.log(`  Forward: ${event.data.forwardStatus}`);
+                if (event.data.forwardError) {
+                    console.log(`  Forward error: ${event.data.forwardError}`);
+                }
+            }
         },
         onCompleted: (err, event) => {
             if (err || !event.data) {
@@ -99,6 +105,31 @@ await getScu.getStudy({
 `);
 }
 
+function printForwardExample(studyInstanceUid) {
+        console.log('\nForward backend example');
+        console.log(`
+const getScu = new GetScu({
+    addr: '127.0.0.1:4242',
+    callingAeTitle: 'GET-DEMO',
+    calledAeTitle: 'ORTHANC',
+    storageBackend: 'Forward',
+    forwardTarget: {
+        addr: '127.0.0.1:11112',
+        callingAeTitle: 'FORWARD-SCU',
+        calledAeTitle: 'DEST-SCP'
+    },
+    strictForward: true
+});
+
+await getScu.getStudy({
+    query: {
+        QueryRetrieveLevel: 'STUDY',
+        StudyInstanceUID: '${studyInstanceUid}'
+    }
+});
+`);
+}
+
 const study = await findFirstStudy();
 
 if (!study?.StudyInstanceUID) {
@@ -109,3 +140,4 @@ if (!study?.StudyInstanceUID) {
 console.log(`Using study ${study.StudyInstanceUID}`);
 await runFilesystemExample(study.StudyInstanceUID);
 printS3Example(study.StudyInstanceUID);
+printForwardExample(study.StudyInstanceUID);

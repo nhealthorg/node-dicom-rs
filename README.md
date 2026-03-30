@@ -287,7 +287,7 @@ For complete documentation, see the **[MoveScu Guide](./docs/movescu.md)**
 
 ### Retrieving DICOM Studies (GetScu)
 
-Retrieve studies from remote PACS using DICOM C-GET and store them directly to filesystem or S3:
+Retrieve studies from remote PACS using DICOM C-GET and store or relay them (filesystem, S3, or forward to PACS):
 
 ```typescript
 import { GetScu } from '@nuxthealth/node-dicom';
@@ -338,6 +338,27 @@ const s3Getter = new GetScu({
 });
 
 await s3Getter.getStudy({
+    query: {
+        StudyInstanceUID: '1.2.3.4.5',
+        QueryRetrieveLevel: 'STUDY'
+    }
+});
+
+// Or forward directly to another PACS (no disk write)
+const relayGetter = new GetScu({
+    addr: '192.168.1.100:4242',
+    callingAeTitle: 'MY-SCU',
+    calledAeTitle: 'ORTHANC',
+    storageBackend: 'Forward',
+    forwardTarget: {
+        addr: '192.168.1.200:11112',
+        callingAeTitle: 'FORWARD-SCU',
+        calledAeTitle: 'DEST-SCP'
+    },
+    strictForward: true
+});
+
+await relayGetter.getStudy({
     query: {
         StudyInstanceUID: '1.2.3.4.5',
         QueryRetrieveLevel: 'STUDY'

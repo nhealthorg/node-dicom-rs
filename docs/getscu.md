@@ -4,7 +4,7 @@
 
 The `GetScu` class provides a DICOM C-GET Service Class User (SCU) for retrieving studies, series, or instances from a PACS over the same association that issued the query.
 
-**Key Concept**: Unlike `MoveScu`, C-GET does not forward data to another AE title. The remote PACS sends C-STORE requests back over the same connection, and `GetScu` stores those incoming objects either on the local filesystem or in S3-compatible object storage.
+**Key Concept**: Unlike `MoveScu`, C-GET does not request the source PACS to push to a third-party AE. The source sends C-STORE requests back over the same connection, and `GetScu` can either write those objects to local filesystem, upload them to S3-compatible object storage, or forward them to a destination PACS using an internal C-STORE relay.
 
 ## Basic Usage
 
@@ -59,8 +59,10 @@ console.log(`Retrieved ${result.completed} of ${result.total} instances`);
 | `maxPduLength` | number | No | `16384` | Maximum PDU length |
 | `verbose` | boolean | No | `false` | Enable verbose logging |
 | `outDir` | string | No | - | Base directory for filesystem storage |
-| `storageBackend` | `'Filesystem'\|'S3'` | No | `Filesystem` | Storage backend for received files |
+| `storageBackend` | `'Filesystem'\|'S3'\|'Forward'` | No | `Filesystem` | Storage backend for received files |
 | `s3Config` | object | No | - | S3 configuration (required when `storageBackend` is `S3`) |
+| `forwardTarget` | object | No | - | Destination PACS configuration (required when `storageBackend` is `Forward`) |
+| `strictForward` | boolean | No | `false` | If true, fail C-GET when forwarding any instance fails |
 
 ## getStudy() API
 
@@ -137,6 +139,32 @@ Objects are uploaded with the same key layout:
 <StudyInstanceUID>/<SeriesInstanceUID>/<SOPInstanceUID>.dcm
 ```
 
+### Forward (In-Memory Relay)
+
+```javascript
+const getScu = new GetScu({
+  addr: '127.0.0.1:4242',
+  callingAeTitle: 'GET-SCU',
+  calledAeTitle: 'ORTHANC',
+  storageBackend: 'Forward',
+  forwardTarget: {
+    addr: '127.0.0.1:11112',
+    callingAeTitle: 'FORWARD-SCU',
+    calledAeTitle: 'DEST-SCP'
+  },
+  strictForward: true
+});
+
+await getScu.getStudy({
+  query: {
+    StudyInstanceUID: '1.2.3.4.5',
+    QueryRetrieveLevel: 'STUDY'
+  }
+});
+```
+
+In `Forward` mode, objects are not written to local disk by `GetScu`.
+
 ## Query Models
 
 ### Study Root
@@ -207,6 +235,9 @@ onSubOperation: (err, event) => {
 - `warning`
 - `file`
 - `sopInstanceUid`
+- `forwardedTo`
+- `forwardStatus`
+- `forwardError`
 
 ### onCompleted
 

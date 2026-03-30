@@ -83,6 +83,17 @@ Demonstrates:
 - Progress tracking during retrieval
 - Equivalent S3 backend configuration
 
+### 4b. GetScu - Forward to StoreScp
+
+```bash
+node getscu-forward-test.mjs
+```
+
+Demonstrates:
+- Retrieving a study from Orthanc with C-GET
+- Forwarding each received instance directly to a StoreScp target
+- Strict forwarding mode (`strictForward: true`) so relay errors fail the operation
+
 ### 5. DICOMweb - Query and retrieve servers
 
 ```bash
@@ -115,6 +126,7 @@ playground/
 ├── storescu-demo.mjs           # StoreScu demo
 ├── getscu-demo.mjs             # GetScu demo
 ├── getscu-simple-test.mjs      # GetScu minimal retrieval test
+├── getscu-forward-test.mjs      # GetScu forward-to-StoreScp relay test
 ├── dicomweb-demo.mjs           # QIDO-RS + WADO-RS demo
 ├── testdata/                   # Downloaded test DICOM files
 ├── test-received/              # Files received by StoreScp demos

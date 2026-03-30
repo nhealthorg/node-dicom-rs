@@ -1235,39 +1235,7 @@ async fn expand_s3_sources(
     Ok(expanded)
 }
 
-fn store_req_command(
-    storage_sop_class_uid: &str,
-    storage_sop_instance_uid: &str,
-    message_id: u16,
-) -> InMemDicomObject<StandardDataDictionary> {
-    InMemDicomObject::command_from_element_iter([
-        // SOP Class UID
-        DataElement::new(
-            tags::AFFECTED_SOP_CLASS_UID,
-            VR::UI,
-            dicom_value!(Str, storage_sop_class_uid),
-        ),
-        // command field
-        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x0001])),
-        // message ID
-        DataElement::new(tags::MESSAGE_ID, VR::US, dicom_value!(U16, [message_id])),
-        //priority
-        DataElement::new(tags::PRIORITY, VR::US, dicom_value!(U16, [0x0000])),
-        // data set type
-        DataElement::new(
-            tags::COMMAND_DATA_SET_TYPE,
-            VR::US,
-            dicom_value!(U16, [0x0000]),
-        ),
-        // affected SOP Instance UID
-        DataElement::new(
-            tags::AFFECTED_SOP_INSTANCE_UID,
-            VR::UI,
-            dicom_value!(Str, storage_sop_instance_uid),
-        ),
-    ])
-}
-
+pub use crate::utils::store_req_command;
 
 fn check_files(
     sources: Vec<FileSource>,

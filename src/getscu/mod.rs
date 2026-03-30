@@ -6,7 +6,7 @@ use napi_derive::napi;
 use std::collections::HashMap;
 use std::sync::Arc;
 use snafu::Snafu;
-use crate::utils::S3Config;
+use crate::utils::{S3Config, ForwardTargetConfig};
 
 pub use get_async::run_get;
 
@@ -64,6 +64,8 @@ pub enum GetStorageBackend {
     Filesystem,
     /// Store files in S3-compatible object storage
     S3,
+    /// Forward received instances directly to another PACS via C-STORE (no disk write)
+    Forward,
 }
 
 /// Options for creating a GetScu instance
@@ -86,6 +88,10 @@ pub struct GetScuOptions {
     pub storage_backend: Option<GetStorageBackend>,
     /// S3 configuration (required when storageBackend is S3)
     pub s3_config: Option<S3Config>,
+    /// Forward target configuration (required when storageBackend is Forward)
+    pub forward_target: Option<ForwardTargetConfig>,
+    /// If true, fail C-GET when forwarding a received instance fails
+    pub strict_forward: Option<bool>,
 }
 
 /// Event emitted for each sub-operation (file being retrieved)
@@ -111,6 +117,12 @@ pub struct GetSubOperationData {
     pub file: Option<String>,
     /// SOP Instance UID of current file
     pub sop_instance_uid: Option<String>,
+    /// Destination PACS address when Forward backend is used
+    pub forwarded_to: Option<String>,
+    /// Forward status when Forward backend is used: "ok" or "error"
+    pub forward_status: Option<String>,
+    /// Forward error details when Forward backend is used
+    pub forward_error: Option<String>,
 }
 
 /// Event emitted when the C-GET operation completes
@@ -193,6 +205,8 @@ pub struct GetScu {
     out_dir: Option<String>,
     storage_backend: GetStorageBackend,
     s3_config: Option<S3Config>,
+    forward_target: Option<ForwardTargetConfig>,
+    strict_forward: bool,
 }
 
 #[napi]
@@ -224,6 +238,8 @@ impl GetScu {
             out_dir: options.out_dir,
             storage_backend,
             s3_config: options.s3_config,
+            forward_target: options.forward_target,
+            strict_forward: options.strict_forward.unwrap_or(false),
         })
     }
 
@@ -273,6 +289,8 @@ impl GetScu {
             out_dir: self.out_dir.clone(),
             storage_backend: self.storage_backend.clone(),
             s3_config: self.s3_config.clone(),
+            forward_target: self.forward_target.clone(),
+            strict_forward: self.strict_forward,
             query_model: query_model_enum,
             on_sub_operation: on_sub_operation.map(Arc::new),
             on_completed: on_completed.map(Arc::new),
@@ -291,6 +309,8 @@ pub struct GetArgs {
     pub out_dir: Option<String>,
     pub storage_backend: GetStorageBackend,
     pub s3_config: Option<S3Config>,
+    pub forward_target: Option<ForwardTargetConfig>,
+    pub strict_forward: bool,
     pub query_model: GetQueryModel,
 }
 
@@ -310,6 +330,8 @@ pub struct GetHandler {
     out_dir: Option<String>,
     storage_backend: GetStorageBackend,
     s3_config: Option<S3Config>,
+    forward_target: Option<ForwardTargetConfig>,
+    strict_forward: bool,
     query_model: GetQueryModel,
     on_sub_operation: Option<Arc<ThreadsafeFunction<GetSubOperationEvent>>>,
     on_completed: Option<Arc<ThreadsafeFunction<GetCompletedEvent>>>,
@@ -331,6 +353,8 @@ impl Task for GetHandler {
             out_dir: self.out_dir.clone(),
             storage_backend: self.storage_backend.clone(),
             s3_config: self.s3_config.clone(),
+            forward_target: self.forward_target.clone(),
+            strict_forward: self.strict_forward,
             query_model: self.query_model,
         };
 
