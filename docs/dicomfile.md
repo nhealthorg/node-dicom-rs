@@ -109,6 +109,9 @@ const file = new DicomFile({
 // All operations now use S3
 await file.open('studies/patient123/ct-scan.dcm');
 await file.saveAsJson('output/metadata.json', true);
+
+// Note: S3 backend also supports intelligent format detection
+// Handles both standard DICOM files and dataset-only files seamlessly
 ```
 
 ## Opening Files
@@ -123,6 +126,40 @@ await file.open('/path/to/scan.dcm');
 
 file.close();
 ```
+
+**Intelligent Format Detection:**
+
+The `open()` method automatically detects and handles both standard DICOM files and dataset-only files:
+
+```typescript
+const file = new DicomFile();
+
+// Standard DICOM file with meta header - opens directly
+await file.open('./standard-dicom.dcm');
+
+// Dataset-only file (no meta header) - automatically creates meta on-the-fly
+await file.open('./dataset-only.dcm');
+// Creates proper FileMetaTable from dataset information:
+//   - Extracts SOP Class UID and SOP Instance UID from dataset
+//   - Determines Transfer Syntax UID (or defaults to Implicit VR Little Endian)
+//   - Builds complete file meta information for full DICOM compatibility
+
+// Works seamlessly with both formats from StoreSCP
+// (regardless of storeWithFileMeta setting)
+file.close();
+```
+
+**How it works:**
+1. **First attempt**: Try to open as standard DICOM file with meta header
+2. **Fallback**: If that fails, parse as dataset-only and create meta information from:
+   - `SOPClassUID` tag (required, defaults to Secondary Capture if missing)
+   - `SOPInstanceUID` tag (required, must exist in dataset)
+   - `TransferSyntaxUID` tag (optional, defaults to Implicit VR Little Endian)
+3. **Result**: Full DICOM file object ready for all operations
+
+This is particularly useful when working with StoreSCP-received files that may have been stored 
+without meta headers (when `storeWithFileMeta: false` is configured), or when processing 
+dataset-only files from other sources.
 
 ### From DICOM JSON
 

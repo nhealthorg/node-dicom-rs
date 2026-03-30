@@ -66,7 +66,8 @@ const sender = new StoreScu({
     addr: '192.168.1.100:104',
     callingAeTitle: 'MY-SCU',
     calledAeTitle: 'REMOTE-SCP',
-    verbose: true
+    verbose: true,
+    throttleDelayMs: 100  // Optional: Rate limiting - delay 100ms between each file
 });
 
 // Add files
@@ -99,6 +100,8 @@ import { DicomFile } from '@nuxthealth/node-dicom';
 
 const file = new DicomFile();
 await file.open('./scan.dcm');
+// Automatically handles both standard DICOM files with meta headers
+// and dataset-only files (without meta) - creates meta on-the-fly if needed
 
 // Extract specific tags (always returns flat structure)
 const data = file.extract(['PatientName', 'StudyDate', 'Modality']);

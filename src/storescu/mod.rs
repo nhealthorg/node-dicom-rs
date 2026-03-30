@@ -290,7 +290,9 @@ pub struct StoreScu {
     /// User Identity JWT
     jwt: Option<String>,
     /// Dispatch these many service users to send files in parallel
-    concurrency: Option<u32>
+    concurrency: Option<u32>,
+    /// Throttle delay in milliseconds between sending each file
+    throttle_delay_ms: u32,
 }
 
 struct DicomFile {
@@ -470,7 +472,9 @@ pub struct StoreScuOptions {
     /// Number of parallel connections for concurrent file transfer (default: 1)
     pub concurrency: Option<u32>,
     /// S3 configuration for reading files from S3 storage (required if using S3 paths)
-    pub s3_config: Option<S3Config>
+    pub s3_config: Option<S3Config>,
+    /// Delay in milliseconds between sending each file for throttling/rate limiting (default: 0, no delay)
+    pub throttle_delay_ms: Option<u32>
 }
 
 #[napi]
@@ -518,6 +522,7 @@ impl StoreScu {
     #[napi(constructor)]
     pub fn new(options: StoreScuOptions) -> Self {
         let file_sources: Vec<FileSource> = vec![];
+        let throttle_delay_ms = options.throttle_delay_ms.unwrap_or(0);
         let mut verbose: bool = false;
         if options.verbose.is_some() {
             verbose = options.verbose.unwrap();
@@ -586,7 +591,8 @@ impl StoreScu {
             kerberos_service_ticket: options.kerberos_service_ticket.or(None),
             saml_assertion: options.saml_assertion.or(None),
             jwt: options.jwt.or(None),
-            concurrency: concurrency
+            concurrency: concurrency,
+            throttle_delay_ms: throttle_delay_ms,
         }
     }
 
@@ -852,6 +858,7 @@ impl StoreScu {
             fail_first: self.fail_first,
             never_transcode: self.never_transcode,
             ignore_sop_class: self.ignore_sop_class,
+            throttle_delay_ms: self.throttle_delay_ms,
             username: self.username.clone(),
             password: self.password.clone(),
             kerberos_service_ticket: self.kerberos_service_ticket.clone(),
@@ -885,6 +892,7 @@ pub struct StoreScuHandler {
     saml_assertion: Option<String>,
     jwt: Option<String>,
     concurrency: Option<u32>,
+    throttle_delay_ms: u32,
     on_transfer_started: Option<Arc<ThreadsafeFunction<TransferStartedEvent, ()>>>,
     on_file_sending: Option<Arc<ThreadsafeFunction<FileSendingEvent, ()>>>,
     on_file_sent: Option<Arc<ThreadsafeFunction<FileSentEvent, ()>>>,
@@ -916,6 +924,7 @@ impl napi::Task for StoreScuHandler {
             saml_assertion: self.saml_assertion.clone(),
             jwt: self.jwt.clone(),
             concurrency: self.concurrency,
+            throttle_delay_ms: self.throttle_delay_ms,
         };
 
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -976,6 +985,7 @@ async fn run_async(
         saml_assertion,
         jwt,
         concurrency,
+        throttle_delay_ms,
     } = args;
 
     // never transcode if the feature is disabled
@@ -1107,6 +1117,7 @@ async fn run_async(
                 &callbacks_clone,
                 successful_count_clone,
                 failed_count_clone,
+                throttle_delay_ms,
             )
             .await?;
 

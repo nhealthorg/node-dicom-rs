@@ -9,7 +9,7 @@ use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use dicom_core::{dicom_value, DataElement, VR};
 use dicom_ul::{
-    association::ServerAssociation,
+    association::{Association, ServerAssociation},
     pdu::{PDataValueType, PresentationContextResultReason},
     Pdu,
 };
@@ -273,7 +273,7 @@ pub async fn run_store_async(
 }
 
 async fn inner(
-    mut association: ServerAssociation<tokio::net::TcpStream>,
+    mut association: dicom_ul::association::server::AsyncServerAssociation<tokio::net::TcpStream>,
     verbose: bool,
     out_dir: &Option<String>,
     study_timeout: u32,

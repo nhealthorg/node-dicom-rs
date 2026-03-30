@@ -347,43 +347,126 @@ impl DicomFile {
     pub async fn open(&self, path: String) -> napi::Result<String> {
         use dicom_object::OpenFileOptions;
         use dicom_object::file::ReadPreamble;
+        use dicom_object::{InMemDicomObject, FileMetaTableBuilder};
+        use dicom_dictionary_std::uids;
         
         match self.storage_config.backend {
             StorageBackend::S3 => {
                 // Read from S3
                 let data = self.read_from_s3(&path).await?;
                 
-                // Try to parse DICOM from bytes with auto-detection of preamble
-                // If that fails (e.g., dataset-only file), try without preamble
-                let dicom_file = OpenFileOptions::new()
+                // Try to parse with auto-detection first (standard DICOM with meta)
+                let result = OpenFileOptions::new()
                     .read_preamble(ReadPreamble::Auto)
-                    .from_reader(&data[..])
-                    .or_else(|_| {
-                        OpenFileOptions::new()
-                            .read_preamble(ReadPreamble::Never)
-                            .from_reader(&data[..])
-                    })
-                    .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM from S3: {}", e)))?;
+                    .from_reader(&data[..]);
+                
+                let dicom_file = match result {
+                    Ok(file) => {
+                        *self.dicom_file.lock().unwrap() = Some(file);
+                        return Ok(format!("File opened successfully from S3 (with meta header): {}", path));
+                    },
+                    Err(_) => {
+                        // Failed with Auto, try dataset-only (no meta header)
+                        // First read as InMemDicomObject to get dataset
+                        let mem_obj = InMemDicomObject::read_dataset_with_ts(&data[..], 
+                            &dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN.erased())
+                            .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM dataset from S3: {}", e)))?;
+                        
+                        // Extract necessary info to build meta header
+                        let sop_class_uid = mem_obj.element(tags::SOP_CLASS_UID)
+                            .ok()
+                            .and_then(|e| e.to_str().ok())
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(|| uids::SECONDARY_CAPTURE_IMAGE_STORAGE.to_string());
+                        
+                        let sop_instance_uid = mem_obj.element(tags::SOP_INSTANCE_UID)
+                            .ok()
+                            .and_then(|e| e.to_str().ok())
+                            .map(|s| s.trim().to_string())
+                            .ok_or_else(|| napi::Error::from_reason("SOP Instance UID not found in dataset".to_string()))?;
+                        
+                        let transfer_syntax = mem_obj.element(tags::TRANSFER_SYNTAX_UID)
+                            .ok()
+                            .and_then(|e| e.to_str().ok())
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(|| uids::IMPLICIT_VR_LITTLE_ENDIAN.to_string());
+                        
+                        // Build proper file meta information
+                        let meta = FileMetaTableBuilder::new()
+                            .media_storage_sop_class_uid(sop_class_uid)
+                            .media_storage_sop_instance_uid(sop_instance_uid)
+                            .transfer_syntax(transfer_syntax)
+                            .implementation_class_uid("1.2.826.0.1.3680043.9.7433.1.1")
+                            .implementation_version_name("node-dicom-rs")
+                            .build()
+                            .map_err(|e| napi::Error::from_reason(format!("Failed to build meta information: {}", e)))?;
+                        
+                        // Create FileDicomObject with proper meta
+                        mem_obj.with_exact_meta(meta)
+                    }
+                };
                 
                 *self.dicom_file.lock().unwrap() = Some(dicom_file);
-                Ok(format!("File opened successfully from S3: {}", path))
+                Ok(format!("File opened successfully from S3 (dataset-only, meta created): {}", path))
             },
             StorageBackend::Filesystem => {
-                // Read from filesystem with auto-detection of preamble
-                // If that fails (e.g., dataset-only file), try without preamble
+                // Read from filesystem with auto-detection first
                 let resolved_path = self.resolve_path(&path);
-                let dicom_file = OpenFileOptions::new()
+                let result = OpenFileOptions::new()
                     .read_preamble(ReadPreamble::Auto)
-                    .open_file(&resolved_path)
-                    .or_else(|_| {
-                        OpenFileOptions::new()
-                            .read_preamble(ReadPreamble::Never)
-                            .open_file(&resolved_path)
-                    })
-                    .map_err(|e| napi::Error::from_reason(format!("Failed to open DICOM file: {}", e)))?;
+                    .open_file(&resolved_path);
+                
+                let dicom_file = match result {
+                    Ok(file) => {
+                        *self.dicom_file.lock().unwrap() = Some(file);
+                        return Ok(format!("File opened successfully (with meta header): {}", resolved_path.display()));
+                    },
+                    Err(_) => {
+                        // Failed with Auto, try dataset-only (no meta header)
+                        let file_data = std::fs::read(&resolved_path)
+                            .map_err(|e| napi::Error::from_reason(format!("Failed to read file: {}", e)))?;
+                        
+                        // Read as InMemDicomObject to get dataset
+                        let mem_obj = InMemDicomObject::read_dataset_with_ts(&file_data[..], 
+                            &dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN.erased())
+                            .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM dataset: {}", e)))?;
+                        
+                        // Extract necessary info to build meta header
+                        let sop_class_uid = mem_obj.element(tags::SOP_CLASS_UID)
+                            .ok()
+                            .and_then(|e| e.to_str().ok())
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(|| uids::SECONDARY_CAPTURE_IMAGE_STORAGE.to_string());
+                        
+                        let sop_instance_uid = mem_obj.element(tags::SOP_INSTANCE_UID)
+                            .ok()
+                            .and_then(|e| e.to_str().ok())
+                            .map(|s| s.trim().to_string())
+                            .ok_or_else(|| napi::Error::from_reason("SOP Instance UID not found in dataset".to_string()))?;
+                        
+                        let transfer_syntax = mem_obj.element(tags::TRANSFER_SYNTAX_UID)
+                            .ok()
+                            .and_then(|e| e.to_str().ok())
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(|| uids::IMPLICIT_VR_LITTLE_ENDIAN.to_string());
+                        
+                        // Build proper file meta information
+                        let meta = FileMetaTableBuilder::new()
+                            .media_storage_sop_class_uid(sop_class_uid)
+                            .media_storage_sop_instance_uid(sop_instance_uid)
+                            .transfer_syntax(transfer_syntax)
+                            .implementation_class_uid("1.2.826.0.1.3680043.9.7433.1.1")
+                            .implementation_version_name("node-dicom-rs")
+                            .build()
+                            .map_err(|e| napi::Error::from_reason(format!("Failed to build meta information: {}", e)))?;
+                        
+                        // Create FileDicomObject with proper meta
+                        mem_obj.with_exact_meta(meta)
+                    }
+                };
                 
                 *self.dicom_file.lock().unwrap() = Some(dicom_file);
-                Ok(format!("File opened successfully: {}", resolved_path.display()))
+                Ok(format!("File opened successfully (dataset-only, meta created): {}", resolved_path.display()))
             }
         }
     }

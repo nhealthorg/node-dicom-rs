@@ -559,6 +559,157 @@ async function testConcurrency() {
    // High concurrency won't help if network is saturated
    ```
 
+#### throttleDelayMs
+
+**Type:** `number` (optional)  
+**Default:** `0` (no delay)
+
+Delay in milliseconds to wait between sending each file. This provides rate limiting to avoid overwhelming 
+remote PACS systems or to comply with transfer rate restrictions.
+
+```typescript
+// No delay (default)
+throttleDelayMs: 0
+
+// Small delay (100ms between files)
+throttleDelayMs: 100
+
+// Moderate delay (250ms between files)
+throttleDelayMs: 250
+
+// Large delay (500ms between files)
+throttleDelayMs: 500
+
+// 1 second delay
+throttleDelayMs: 1000
+```
+
+**When to Use Throttling:**
+
+✅ **Use throttling when:**
+- Remote PACS has rate limits or quotas
+- Sharing network bandwidth with other applications
+- Sending to resource-constrained systems
+- Remote SCP experiences performance issues under load
+- PACS vendor recommends rate limiting
+- Testing or debugging to slow down transfers
+- Sending to cloud PACS with API rate limits
+
+❌ **Don't use when:**
+- Maximum throughput is needed
+- Remote PACS can handle high transfer rates
+- Network bandwidth is underutilized
+- Time-critical transfers
+
+**Performance Impact:**
+
+```typescript
+// Example: 100 files, 1 MB each
+
+throttleDelayMs: 0      // ~10 seconds  (baseline)
+throttleDelayMs: 100    // ~20 seconds  (~10s base + 10s delay)
+throttleDelayMs: 250    // ~35 seconds  (~10s base + 25s delay)
+throttleDelayMs: 500    // ~60 seconds  (~10s base + 50s delay)
+throttleDelayMs: 1000   // ~110 seconds (~10s base + 100s delay)
+```
+
+**Combining with Concurrency:**
+
+Throttling applies per-file, across all concurrent associations:
+
+```typescript
+// Example: 4 concurrent associations, 100ms throttle
+const sender = new StoreScu({
+    addr: 'pacs.hospital.org:104',
+    callingAeTitle: 'CONTROLLED-SCU',
+    concurrency: 4,           // 4 files in parallel
+    throttleDelayMs: 100      // 100ms delay after each file
+});
+
+// With 4 concurrent associations:
+// - 4 files sent immediately
+// - Each waits 100ms before next file
+// - Effective rate: ~40 files per second (4 associations × 10 files/sec)
+```
+
+**Common Use Cases:**
+
+```typescript
+// Case 1: Gentle rate limiting for shared network
+const gentleSender = new StoreScu({
+    addr: 'pacs.hospital.org:104',
+    throttleDelayMs: 100,     // Small delay between files
+    concurrency: 4            // Still use parallelism
+});
+
+// Case 2: Strict rate limiting for resource-constrained PACS
+const controlledSender = new StoreScu({
+    addr: 'old-pacs.hospital.org:104',
+    throttleDelayMs: 500,     // Half-second delay
+    concurrency: 1            // Sequential transfer
+});
+
+// Case 3: Cloud PACS with rate limits (e.g., 10 files/second)
+const cloudSender = new StoreScu({
+    addr: 'cloud-pacs.example.com:443',
+    throttleDelayMs: 100,     // 100ms = ~10 files/sec per connection
+    concurrency: 1            // Single connection to respect quota
+});
+
+// Case 4: Debugging - slow down to observe behavior
+const debugSender = new StoreScu({
+    addr: 'test-pacs.local:104',
+    throttleDelayMs: 2000,    // 2 second delay - easy to observe
+    verbose: true
+});
+```
+
+**Calculating Effective Transfer Rate:**
+
+```typescript
+// Base formula (single association):
+// files_per_second = 1000 / throttleDelayMs
+
+throttleDelayMs: 100   // → 10 files/sec
+throttleDelayMs: 200   // → 5 files/sec
+throttleDelayMs: 500   // → 2 files/sec
+throttleDelayMs: 1000  // → 1 file/sec
+
+// With concurrency:
+// effective_rate = (1000 / throttleDelayMs) × concurrency
+
+concurrency: 4, throttleDelayMs: 100   // → 40 files/sec
+concurrency: 2, throttleDelayMs: 250   // → 8 files/sec
+concurrency: 1, throttleDelayMs: 500   // → 2 files/sec
+```
+
+**Important Notes:**
+
+1. **Delay applies after each file completes** - doesn't include transfer time
+2. **Works with all concurrency levels** - each association respects the delay
+3. **Applies to all file sources** - filesystem and S3 files
+4. **Does not affect association establishment** - only file transfers
+5. **Zero delay (default)** - sends files as fast as possible
+
+**Recommended Settings by Scenario:**
+
+```typescript
+// Maximum speed (default)
+throttleDelayMs: 0
+
+// Gentle rate limiting (shared network)
+throttleDelayMs: 50-100
+
+// Moderate rate limiting (resource constraints)
+throttleDelayMs: 200-500
+
+// Strict rate limiting (old/slow PACS)
+throttleDelayMs: 500-1000
+
+// Very slow (debugging/testing)
+throttleDelayMs: 2000+
+```
+
 3. **File Size Matters**: Large files benefit less from concurrency
    ```typescript
    // 10 files × 1 GB each
@@ -608,6 +759,41 @@ const sender = new StoreScu({
     addr: remoteAddress,
     concurrency: concurrencyByNetwork[networkType]
 });
+
+// Rate limiting for resource-constrained PACS
+function getThrottleSettings(pacsType: string) {
+    const settings = {
+        'modern': { concurrency: 8, throttleDelayMs: 0 },      // No limits
+        'standard': { concurrency: 4, throttleDelayMs: 50 },   // Gentle
+        'legacy': { concurrency: 2, throttleDelayMs: 250 },    // Moderate
+        'slow': { concurrency: 1, throttleDelayMs: 500 }       // Strict
+    };
+    return settings[pacsType] || settings['standard'];
+}
+
+const settings = getThrottleSettings(pacsType);
+const sender = new StoreScu({
+    addr: pacsAddress,
+    concurrency: settings.concurrency,
+    throttleDelayMs: settings.throttleDelayMs
+});
+
+// Smart rate limiting based on PACS capacity
+async function adaptiveTransfer(files: string[], pacsCapacity: 'high' | 'medium' | 'low') {
+    const config = {
+        high: { concurrency: 8, throttleDelayMs: 0 },
+        medium: { concurrency: 4, throttleDelayMs: 100 },
+        low: { concurrency: 1, throttleDelayMs: 500 }
+    };
+    
+    const sender = new StoreScu({
+        addr: 'pacs.hospital.org:104',
+        ...config[pacsCapacity]
+    });
+    
+    files.forEach(f => sender.addFile(f));
+    return await sender.send();
+}
 ```
 
 **Troubleshooting:**
@@ -1310,6 +1496,139 @@ async function sendInBatches(files: string[], remoteAddress: string, batchSize =
 }
 ```
 
+## Rate-Limited Transfers
+
+Use the `throttleDelayMs` option to control transfer rate and avoid overwhelming remote PACS systems:
+
+### Basic Rate Limiting
+
+```typescript
+async function sendWithRateLimit(files: string[], remoteAddress: string) {
+    // Limit to ~10 files per second
+    const sender = new StoreScu({
+        addr: remoteAddress,
+        callingAeTitle: 'CONTROLLED-SCU',
+        throttleDelayMs: 100  // 100ms delay between files
+    });
+
+    files.forEach(f => sender.addFile(f));
+    
+    console.log('Sending with rate limit: ~10 files/second');
+    const result = await sender.send();
+    console.log(`Sent ${result.successful} files with controlled rate`);
+    
+    return result;
+}
+```
+
+### Adaptive Rate Limiting Based on PACS Type
+
+```typescript
+interface PACSProfile {
+    name: string;
+    concurrency: number;
+    throttleDelayMs: number;
+    description: string;
+}
+
+const pacsProfiles: Record<string, PACSProfile> = {
+    modern: {
+        name: 'Modern PACS',
+        concurrency: 8,
+        throttleDelayMs: 0,
+        description: 'High-performance PACS, no limits'
+    },
+    standard: {
+        name: 'Standard PACS',
+        concurrency: 4,
+        throttleDelayMs: 50,
+        description: 'Standard PACS with gentle rate limiting'
+    },
+    legacy: {
+        name: 'Legacy PACS',
+        concurrency: 2,
+        throttleDelayMs: 250,
+        description: 'Older PACS with moderate rate limiting'
+    },
+    constrained: {
+        name: 'Resource-Constrained PACS',
+        concurrency: 1,
+        throttleDelayMs: 500,
+        description: 'Limited resources, strict rate limiting'
+    }
+};
+
+async function sendToTargetPACS(
+    files: string[],
+    remoteAddress: string,
+    pacsProfile: keyof typeof pacsProfiles
+) {
+    const profile = pacsProfiles[pacsProfile];
+    
+    console.log(`Using profile: ${profile.name}`);
+    console.log(`  ${profile.description}`);
+    console.log(`  Concurrency: ${profile.concurrency}`);
+    console.log(`  Throttle: ${profile.throttleDelayMs}ms`);
+    
+    const sender = new StoreScu({
+        addr: remoteAddress,
+        callingAeTitle: 'ADAPTIVE-SCU',
+        concurrency: profile.concurrency,
+        throttleDelayMs: profile.throttleDelayMs,
+        verbose: false
+    });
+    
+    files.forEach(f => sender.addFile(f));
+    
+    const startTime = Date.now();
+    const result = await sender.send();
+    const duration = (Date.now() - startTime) / 1000;
+    
+    console.log(`\nTransfer complete:`);
+    console.log(`  Files: ${result.successful}/${result.totalFiles}`);
+    console.log(`  Duration: ${duration.toFixed(2)}s`);
+    console.log(`  Rate: ${(result.successful / duration).toFixed(2)} files/sec`);
+    
+    return result;
+}
+
+// Usage examples:
+await sendToTargetPACS(files, '192.168.1.100:104', 'modern');      // Fast
+await sendToTargetPACS(files, '192.168.1.101:104', 'standard');    // Balanced
+await sendToTargetPACS(files, '192.168.1.102:104', 'legacy');      // Slower
+await sendToTargetPACS(files, '192.168.1.103:104', 'constrained'); // Very slow
+```
+
+### Cloud PACS with API Rate Limits
+
+```typescript
+async function sendToCloudPACS(files: string[], cloudPacsUrl: string) {
+    // Many cloud PACS have rate limits (e.g., 10 requests/second)
+    const sender = new StoreScu({
+        addr: cloudPacsUrl,
+        callingAeTitle: 'CLOUD-SCU',
+        concurrency: 1,           // Single connection
+        throttleDelayMs: 100,     // 100ms = ~10 files/sec
+        maxPduLength: 65536       // Larger PDU for cloud transfer
+    });
+    
+    files.forEach(f => sender.addFile(f));
+    
+    console.log('Sending to cloud PACS with rate limit compliance');
+    
+    const result = await sender.send({
+        onFileSent: (err, event) => {
+            console.log('✓', event.data?.file);
+        },
+        onFileError: (err, event) => {
+            console.error('✗ Rate limit or error:', event.message);
+        }
+    });
+    
+    return result;
+}
+```
+
 ## Tips
 
 1. **Test connection first**: Send a single test file before batch operations
@@ -1320,3 +1639,6 @@ async function sendInBatches(files: string[], remoteAddress: string, batchSize =
 6. **Verify SCP settings**: Ensure remote SCP accepts your AE title and transfer syntaxes
 7. **Use verbose mode**: Enable during development to see detailed DICOM protocol messages
 8. **Callbacks are optional**: Only provide callbacks you need - all are optional
+9. **Use rate limiting for shared resources**: Add `throttleDelayMs` to avoid overwhelming PACS or shared networks
+10. **Combine concurrency with throttling**: Use both together for fine-tuned control (e.g., `concurrency: 4, throttleDelayMs: 100`)
+11. **Works with all file formats**: Automatically handles both standard DICOM files with meta headers and dataset-only files

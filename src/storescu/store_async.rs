@@ -5,6 +5,7 @@ use dicom_encoding::TransferSyntaxIndex;
 use dicom_object::{open_file, FileDicomObject, InMemDicomObject};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use dicom_ul::{
+    association::Association,
     pdu::{PDataValue, PDataValueType},
     ClientAssociation, Pdu,
 };
@@ -29,7 +30,7 @@ pub struct StoreCallbacks {
 }
 
 pub async fn send_file(
-    mut scu: ClientAssociation<TcpStream>,
+    mut scu: dicom_ul::association::client::AsyncClientAssociation<TcpStream>,
     file: DicomFile,
     s3_bucket: Option<&s3::Bucket>,
     message_id: u16,
@@ -39,7 +40,7 @@ pub async fn send_file(
     callbacks: &StoreCallbacks,
     successful_count: Arc<Mutex<u32>>,
     failed_count: Arc<Mutex<u32>>,
-) -> Result<ClientAssociation<TcpStream>, Error>
+) -> Result<dicom_ul::association::client::AsyncClientAssociation<TcpStream>, Error>
 {
     let start_time = std::time::Instant::now();
     
@@ -218,7 +219,7 @@ pub async fn send_file(
             scu.send(&pdu).await.map_err(Box::from).context(ScuSnafu)?;
 
             {
-                let mut pdata = scu.send_pdata(pc_selected.id).await;
+                let mut pdata = scu.send_pdata(pc_selected.id);
                 pdata.write_all(&object_data).await.unwrap();
                 //.whatever_context("Failed to send C-STORE-RQ P-Data")?;
             }
@@ -365,7 +366,7 @@ pub async fn send_file(
 }
 
 pub async fn inner(
-    mut scu: ClientAssociation<TcpStream>,
+    mut scu: dicom_ul::association::client::AsyncClientAssociation<TcpStream>,
     d_files: Arc<Mutex<Vec<DicomFile>>>,
     s3_bucket: Option<Arc<s3::Bucket>>,
     progress_bar: Option<&Arc<tokio::sync::Mutex<ProgressBar>>>,
@@ -376,6 +377,7 @@ pub async fn inner(
     callbacks: &StoreCallbacks,
     successful_count: Arc<Mutex<u32>>,
     failed_count: Arc<Mutex<u32>>,
+    throttle_delay_ms: u32,
 ) -> Result<(), Error>
 {
     let mut message_id = 1;
@@ -420,6 +422,11 @@ pub async fn inner(
         }
         scu = send_file(scu, file, s3_bucket.as_deref(), message_id, progress_bar, verbose, fail_first, callbacks, successful_count.clone(), failed_count.clone()).await?;
         message_id += 1;
+        
+        // Apply throttle delay if configured (rate limiting)
+        if throttle_delay_ms > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(throttle_delay_ms as u64)).await;
+        }
     }
     let _ = scu.release().await;
     Ok(())

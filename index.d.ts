@@ -2353,6 +2353,8 @@ export interface StoreScuOptions {
   concurrency?: number
   /** S3 configuration for reading files from S3 storage (required if using S3 paths) */
   s3Config?: S3Config
+  /** Delay in milliseconds between sending each file for throttling/rate limiting (default: 0, no delay) */
+  throttleDelayMs?: number
 }
 
 /** Study hierarchy data for OnStudyCompleted event */
