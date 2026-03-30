@@ -1,6 +1,6 @@
 {
   "name": "@nuxthealth/node-dicom-linux-arm64-gnu",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "os": [
     "linux"
   ],
@@ -19,7 +19,7 @@
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
-  "repository": "git@github.com:DevJoghurt/node-dicom-rs.git",
+  "repository": "https://github.com/nhealthorg/node-dicom-rs",
   "libc": [
     "glibc"
   ]

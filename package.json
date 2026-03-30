@@ -1,6 +1,6 @@
 {
   "name": "@nuxthealth/node-dicom",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "type": "commonjs",
   "main": "index.js",
   "types": "index.d.ts",
@@ -83,7 +83,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git@github.com:DevJoghurt/node-dicom-rs.git"
+    "url": "https://github.com/nhealthorg/node-dicom-rs"
   },
   "packageManager": "yarn@4.12.0"
 }
