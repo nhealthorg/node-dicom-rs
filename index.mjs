@@ -9,6 +9,7 @@ const nativeAddon = require('./index.js');
 export const {
   DicomFile,
   FindScu,
+  GetScu,
   MoveScu,
   QidoInstanceResult,
   QidoSeriesResult,
@@ -19,6 +20,8 @@ export const {
   StoreScu,
   WadoServer,
   AbstractSyntaxMode,
+  GetQueryModel,
+  GetStorageBackend,
   MoveQueryModel,
   PixelDataFormat,
   QueryModel,

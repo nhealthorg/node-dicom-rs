@@ -71,7 +71,19 @@ Demonstrates:
 
 Requires StoreScp demo to be running first.
 
-### 4. DICOMweb - Query and retrieve servers
+### 4. GetScu - Retrieve and store DICOM files
+
+```bash
+node getscu-demo.mjs
+```
+
+Demonstrates:
+- Retrieving a study with C-GET
+- Writing received instances to the local filesystem
+- Progress tracking during retrieval
+- Equivalent S3 backend configuration
+
+### 5. DICOMweb - Query and retrieve servers
 
 ```bash
 node dicomweb-demo.mjs
@@ -101,9 +113,12 @@ playground/
 ├── storescp-demo.mjs           # StoreScp demo  
 ├── test-onBeforeStore.mjs      # StoreScp with async tag modification demo
 ├── storescu-demo.mjs           # StoreScu demo
+├── getscu-demo.mjs             # GetScu demo
+├── getscu-simple-test.mjs      # GetScu minimal retrieval test
 ├── dicomweb-demo.mjs           # QIDO-RS + WADO-RS demo
 ├── testdata/                   # Downloaded test DICOM files
 ├── test-received/              # Files received by StoreScp demos
+├── test-get-received/          # Files received by GetScu demo
 └── test-output-onbeforestore/  # Files with modified tags from onBeforeStore demo
 ```
 
@@ -111,6 +126,7 @@ playground/
 
 - Run `downloadTestData.sh` first to get sample data
 - StoreScu requires StoreScp to be running
+- GetScu requires a remote PACS with C-GET enabled
 - DICOMweb servers read from `testdata/` directory
 - All demos use minimal configuration for clarity
 - Check each demo file's header comments for prerequisites

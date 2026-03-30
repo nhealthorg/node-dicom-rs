@@ -8,6 +8,7 @@ High-performance Node.js bindings for DICOM (Digital Imaging and Communications 
 - **StoreScu**: Send DICOM files to remote PACS systems
 - **FindScu**: Query DICOM archives with C-FIND protocol (Study Root, Patient Root, Modality Worklist)
 - **MoveScu**: Retrieve studies from remote PACS using C-MOVE protocol (forward to destination AE)
+- **GetScu**: Retrieve studies from remote PACS using C-GET protocol (store directly to filesystem or S3)
 - **QueryBuilder**: Type-safe, fluent API for constructing DICOM queries without memorizing tag names
 - **DicomFile**: Read, parse, and manipulate DICOM files with full metadata extraction
 - **Storage Backends**: Filesystem and S3-compatible object storage support
@@ -250,7 +251,7 @@ const result = await mover.moveStudy({
     },
     onCompleted: (err, event) => {      // Optional: Completion callback
         if (err) return;
-        console.log(`Completed in ${event.data.durationMs}ms`);
+        console.log(`Completed in ${event.data.durationSeconds.toFixed(2)}s`);
     }
 });
 
@@ -283,6 +284,70 @@ await mover.moveStudy({
 **Important**: C-MOVE requires the destination AE title to be configured in the source PACS. For Orthanc, add the destination to the `DicomModalities` section in the configuration.
 
 For complete documentation, see the **[MoveScu Guide](./docs/movescu.md)**
+
+### Retrieving DICOM Studies (GetScu)
+
+Retrieve studies from remote PACS using DICOM C-GET and store them directly to filesystem or S3:
+
+```typescript
+import { GetScu } from '@nuxthealth/node-dicom';
+
+const getter = new GetScu({
+    addr: '192.168.1.100:4242',
+    callingAeTitle: 'MY-SCU',
+    calledAeTitle: 'ORTHANC',
+    outDir: './retrieved-studies',
+    storageBackend: 'Filesystem',
+    verbose: true
+});
+
+const result = await getter.getStudy({
+    query: {
+        StudyInstanceUID: '1.2.840.113619.2.55.3.4.1762893313.19303.1234567890.123',
+        QueryRetrieveLevel: 'STUDY'
+    },
+    queryModel: 'StudyRoot',
+    onSubOperation: (err, event) => {
+        if (err || !event.data) return;
+        const total = event.data.completed + event.data.remaining;
+        console.log(`Progress: ${event.data.completed}/${total}`);
+        if (event.data.file) {
+            console.log(`Stored: ${event.data.file}`);
+        }
+    },
+    onCompleted: (err, event) => {
+        if (err || !event.data) return;
+        console.log(`Completed in ${event.data.durationSeconds.toFixed(2)}s`);
+    }
+});
+
+console.log(`Retrieved ${result.completed} of ${result.total} instances`);
+
+// Or store directly to S3-compatible object storage
+const s3Getter = new GetScu({
+    addr: '192.168.1.100:4242',
+    callingAeTitle: 'MY-SCU',
+    calledAeTitle: 'ORTHANC',
+    storageBackend: 'S3',
+    s3Config: {
+        bucket: 'dicom-archive',
+        accessKey: process.env.S3_ACCESS_KEY!,
+        secretKey: process.env.S3_SECRET_KEY!,
+        endpoint: 'http://127.0.0.1:9000'
+    }
+});
+
+await s3Getter.getStudy({
+    query: {
+        StudyInstanceUID: '1.2.3.4.5',
+        QueryRetrieveLevel: 'STUDY'
+    }
+});
+```
+
+**Important**: C-GET sends DICOM instances back over the same association. Unlike C-MOVE, it does not require a separately configured destination AE.
+
+For complete documentation, see the **[GetScu Guide](./docs/getscu.md)**
 
 ### DICOMweb Services
 
@@ -348,6 +413,7 @@ For detailed documentation, see:
 - **[StoreScu Guide](./docs/storescu.md)** - Sending DICOM files, transfer syntaxes, batch operations
 - **[FindScu Guide](./docs/findscu.md)** - Querying DICOM archives with C-FIND, query models, callbacks
 - **[MoveScu Guide](./docs/movescu.md)** - Retrieving studies with C-MOVE, progress tracking, destination configuration
+- **[GetScu Guide](./docs/getscu.md)** - Retrieving studies with C-GET and storing them to filesystem or S3
 - **[QueryBuilder Guide](./docs/querybuilder.md)** - Type-safe query construction with fluent API
 - **[DicomFile Guide](./docs/dicomfile.md)** - Reading files, extracting metadata, pixel data operations
 - **[QIDO-RS Guide](./docs/qido-rs.md)** - Query service for searching DICOM studies, series, and instances
@@ -491,6 +557,7 @@ Check the `playground/` directory for more examples:
 
 - Basic SCP receiver
 - SCU sender with batch processing
+- C-GET retrieval to filesystem or S3
 - File metadata extraction
 - S3 storage integration
 - Custom tag extraction

@@ -690,6 +690,53 @@ export declare class FindScu {
 }
 
 /**
+ * DICOM C-GET SCU (Service Class User) for retrieving studies/series/instances from a PACS
+ *
+ * # Example
+ *
+ * ```javascript
+ * const { GetScu } = require('@nuxthealth/node-dicom');
+ *
+ * const getScu = new GetScu({
+ *     addr: '127.0.0.1:4242',
+ *     callingAeTitle: 'MY-SCU',
+ *     calledAeTitle: 'ORTHANC',
+ *     outDir: './retrieved-studies',
+ *     storageBackend: 'Filesystem',
+ *     verbose: true
+ * });
+ *
+ * // Retrieve a study to local filesystem
+ * const result = await getScu.getStudy({
+ *     query: {
+ *         QueryRetrieveLevel: 'STUDY',
+ *         StudyInstanceUID: '1.2.3.4.5'
+ *     },
+ *     queryModel: 'StudyRoot',
+ *     onSubOperation: (err, event) => {
+ *         console.log(`Progress: ${event.data?.completed} of ${event.data?.total}`);
+ *     },
+ *     onCompleted: (err, event) => {
+ *         console.log(`Retrieved ${event.data?.completed} instances`);
+ *     }
+ * });
+ *
+ * console.log(`Retrieved ${result.completed} of ${result.total} instances`);
+ * ```
+ */
+export declare class GetScu {
+  /** Create a new GetScu instance */
+  constructor(options: GetScuOptions)
+  /**
+   * Perform a C-GET operation
+   *
+   * @param options - Configuration object containing query, storage settings, queryModel, and callbacks
+   * @returns Promise<GetResult>
+   */
+  getStudy(options: { query: Record<string, string>, queryModel?: 'StudyRoot' | 'PatientRoot', onSubOperation?: (err: Error | null, event: GetSubOperationEvent) => void, onCompleted?: (err: Error | null, event: GetCompletedEvent) => void }): Promise<unknown>
+}
+
+/**
  * DICOM C-MOVE SCU (Service Class User) for retrieving studies/series/instances from a PACS
  *
  * # Example
@@ -2258,6 +2305,94 @@ export declare function getCommonTagSets(): CommonTagSets
  * ```
  */
 export declare function getCommonTransferSyntaxes(): TransferSyntaxConfig
+
+export interface GetCompletedData {
+  /** Total number of sub-operations */
+  total: number
+  /** Number of completed sub-operations */
+  completed: number
+  /** Number of failed sub-operations */
+  failed: number
+  /** Number of warning sub-operations */
+  warning: number
+  /** Duration in seconds */
+  durationSeconds: number
+}
+
+/** Event emitted when the C-GET operation completes */
+export interface GetCompletedEvent {
+  message: string
+  data?: GetCompletedData
+}
+
+/** Query model for C-GET operations */
+export declare const enum GetQueryModel {
+  /** Study Root Query/Retrieve Information Model - GET */
+  StudyRoot = 'StudyRoot',
+  /** Patient Root Query/Retrieve Information Model - GET */
+  PatientRoot = 'PatientRoot'
+}
+
+/** Result of a C-GET operation */
+export interface GetResult {
+  /** Total number of sub-operations (instances to retrieve) */
+  total: number
+  /** Number of completed sub-operations */
+  completed: number
+  /** Number of failed sub-operations */
+  failed: number
+  /** Number of warning sub-operations */
+  warning: number
+}
+
+/** Options for creating a GetScu instance */
+export interface GetScuOptions {
+  /** Address of the PACS server in format "AE@host:port" or "host:port" */
+  addr: string
+  /** Application Entity title of this SCU (default: "GET-SCU") */
+  callingAeTitle?: string
+  /** Application Entity title of the remote SCP (default: extracted from addr or "ANY-SCP") */
+  calledAeTitle?: string
+  /** Maximum PDU length (default: 16384) */
+  maxPduLength?: number
+  /** Enable verbose logging */
+  verbose?: boolean
+  /** Base directory for filesystem storage */
+  outDir?: string
+  /** Storage backend type (default: Filesystem) */
+  storageBackend?: GetStorageBackend
+  /** S3 configuration (required when storageBackend is S3) */
+  s3Config?: S3Config
+}
+
+/** Storage backend type for received DICOM files */
+export declare const enum GetStorageBackend {
+  /** Store files on local filesystem */
+  Filesystem = 'Filesystem',
+  /** Store files in S3-compatible object storage */
+  S3 = 'S3'
+}
+
+export interface GetSubOperationData {
+  /** Number of remaining sub-operations */
+  remaining: number
+  /** Number of completed sub-operations */
+  completed: number
+  /** Number of failed sub-operations */
+  failed: number
+  /** Number of warning sub-operations */
+  warning: number
+  /** Current file being stored (if available) */
+  file?: string
+  /** SOP Instance UID of current file */
+  sopInstanceUid?: string
+}
+
+/** Event emitted for each sub-operation (file being retrieved) */
+export interface GetSubOperationEvent {
+  message: string
+  data?: GetSubOperationData
+}
 
 /** Instance (file) data within a series */
 export interface InstanceHierarchyData {

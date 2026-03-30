@@ -5,6 +5,7 @@ pub mod object;
 pub mod storescp;
 pub mod findscu;
 pub mod movescu;
+pub mod getscu;
 pub mod utils;
 pub mod web;
 
