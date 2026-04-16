@@ -31,8 +31,17 @@ The `DicomFile` class provides comprehensive methods to read, parse, extract dat
 | `getPixelData()` | Sync | `Buffer` | Get raw pixel data as Buffer (may be compressed) |
 | `getDecodedPixelData()` | Sync | `Buffer` | Get decoded/decompressed pixel data (requires transcode feature) |
 | `getProcessedPixelData(options?)` | Sync | `Buffer` | Get decoded + processed pixel data with windowing, frame extraction, 8-bit conversion |
+| `getImageBuffer(options?)` | Sync | `Buffer` | Get encoded PNG/JPEG/BMP image as in-memory buffer (no file I/O) |
 | `saveRawPixelData(path)` | Sync | `string` | Save raw pixel data to file |
 | `processPixelData(options)` | Async | `Promise<string>` | Advanced: process and save with format conversion |
+
+### Binary Tag & Document Access
+
+| Method | Type | Return Type | Description |
+|--------|------|-------------|-------------|
+| `getTagInfo(tagName)` | Sync | `TagDataInfo` | Inspect any tag's VR, binary flag, image flag, MIME type, and byte length |
+| `getTagBytes(tagName)` | Sync | `Buffer` | Binary-safe raw bytes for any tag (OB/OW/UN/etc.) |
+| `getEncapsulatedDocument()` | Sync | `EncapsulatedDocumentData` | Extract encapsulated PDF/text document with MIME type and data Buffer |
 
 ### File Operations
 
@@ -1190,6 +1199,7 @@ file.close();
 | `getPixelData()` | `Buffer` | No | No | No | Raw data extraction, fastest |
 | `getDecodedPixelData()` | `Buffer` | No | Yes* | No | Decompress compressed images |
 | `getProcessedPixelData()` | `Buffer` | No | Yes* | Yes | Windowing, frame extraction, 8-bit conversion |
+| `getImageBuffer()` | `Buffer` | No | Yes* | Yes | Encoded PNG/JPEG/BMP bytes in-memory, no disk I/O |
 | `saveRawPixelData()` | `string` | Yes | No | No | Export raw data to file |
 | `processPixelData()` | `Promise<string>` | Yes | Yes* | Yes | Advanced processing with file output |
 
@@ -1631,6 +1641,282 @@ function renderToCanvas(buffer: Buffer, width: number, height: number) {
 // Usage
 await analyzePixelData('./ct-scan.dcm');
 ```
+
+### Get Encoded Image as Buffer
+
+`getImageBuffer()` returns a fully encoded PNG, JPEG, or BMP image as a Node.js `Buffer` without writing anything to disk. This is convenient for serving images over HTTP, storing blobs in a database, or piping to downstream processing without temporary files.
+
+**Method Signature:**
+
+```typescript
+file.getImageBuffer(options?: {
+    format?: 'Png' | 'Jpeg' | 'Bmp';  // default: 'Png'
+    applyVoiLut?: boolean;             // use WindowCenter/Width from file
+    windowCenter?: number;             // manual window center (overrides VOI LUT)
+    windowWidth?: number;              // manual window width (overrides VOI LUT)
+    frameNumber?: number;              // 0-based frame index for multi-frame
+    convertTo8bit?: boolean;           // scale to 0-255 for display
+    quality?: number;                  // JPEG quality 1-100 (default: 90), ignored for PNG/BMP
+}): Buffer
+```
+
+**Basic Usage:**
+
+```typescript
+const file = new DicomFile();
+await file.open('./ct-scan.dcm');
+
+// Default: PNG with no windowing
+const pngBuffer = file.getImageBuffer();
+console.log(`PNG size: ${pngBuffer.length} bytes`);
+
+// JPEG with VOI LUT from the file header
+const jpegBuffer = file.getImageBuffer({
+    format: 'Jpeg',
+    applyVoiLut: true,
+    convertTo8bit: true,
+    quality: 90
+});
+
+// BMP displayed with custom bone window
+const bmpBuffer = file.getImageBuffer({
+    format: 'Bmp',
+    windowCenter: 300,
+    windowWidth: 1500,
+    convertTo8bit: true
+});
+
+file.close();
+```
+
+**HTTP Response (Express / H3):**
+
+```typescript
+import express from 'express';
+import { DicomFile } from '@nuxthealth/node-dicom';
+
+app.get('/image/:instanceUid', async (req, res) => {
+    const file = new DicomFile();
+    await file.open(`/data/${req.params.instanceUid}.dcm`);
+
+    const buf = file.getImageBuffer({
+        format: 'Jpeg',
+        applyVoiLut: true,
+        convertTo8bit: true,
+        quality: 85
+    });
+
+    file.close();
+
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Content-Length', buf.length);
+    res.end(buf);
+});
+```
+
+**Multi-frame: serve a specific frame:**
+
+```typescript
+const info = file.getPixelDataInfo();
+
+for (let i = 0; i < info.frames; i++) {
+    const frame = file.getImageBuffer({
+        format: 'Png',
+        frameNumber: i,
+        applyVoiLut: true,
+        convertTo8bit: true
+    });
+    await uploadToStorage(`frames/${i}.png`, frame);
+}
+```
+
+**Requirements:** Requires the `transcode` feature. Throws for `Raw` or `Json` format values (use `getPixelData()` or `processPixelData()` instead).
+
+---
+
+## Working with Binary Tags and Encapsulated Documents
+
+Standard `extract()` calls use `to_str()` internally and are not safe for binary payloads (OB, OW, UN, etc.). Three dedicated methods cover this use case.
+
+### Inspecting Tag Metadata: `getTagInfo()`
+
+Returns type metadata for any tag without reading all its bytes. Use this to determine whether to call `extract()` (for string-representable VRs) or `getTagBytes()` / `getEncapsulatedDocument()` (for binary payloads).
+
+**Return type `TagDataInfo`:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `vr` | `string` | DICOM Value Representation (e.g. `"OB"`, `"LO"`) |
+| `isBinary` | `boolean` | `true` for OB/OW/OF/OD/OL/OV/UN |
+| `isImage` | `boolean` | `true` only when the tag is PixelData (7FE0,0010) **and** `BitsAllocated`, `Rows`, and `Columns` are also present — i.e. a real image object. `false` when PixelData holds a non-image payload such as raw bytes or text. |
+| `mimeType` | `string \| null` | MIME type from (0042,0012), populated when tag is (0042,0011) |
+| `byteLength` | `number` | Raw byte count of the payload |
+
+```typescript
+const file = new DicomFile();
+await file.open('./report.dcm');
+
+const info = file.getTagInfo('EncapsulatedDocument');
+console.log(info.vr);        // 'OB'
+console.log(info.isBinary);  // true
+console.log(info.isImage);   // false
+console.log(info.mimeType);  // 'application/pdf'
+console.log(info.byteLength); // e.g. 245760
+
+// Decision logic
+if (info.isBinary && !info.isImage) {
+    const bytes = file.getTagBytes('EncapsulatedDocument');
+    // do something with bytes
+}
+
+file.close();
+```
+
+Tag name formats accepted (same as `extract()`):
+- Standard name: `'EncapsulatedDocument'`
+- Hex string: `'00420011'`
+- DICOM notation: `'(0042,0011)'`
+
+### Reading Raw Binary Bytes: `getTagBytes()`
+
+Binary-safe alternative to `extract()`. Returns the raw tag payload as a `Buffer` for any VR, including compressed private tags, embedded documents, or unknown binary content (UN).
+
+```typescript
+const file = new DicomFile();
+await file.open('./scan-with-private.dcm');
+
+// Read an embedded PDF directly
+const pdfBytes = file.getTagBytes('EncapsulatedDocument');
+fs.writeFileSync('embedded.pdf', pdfBytes);
+
+// Read a private binary tag by hex address
+const vendorBlob = file.getTagBytes('00991001');
+processVendorData(vendorBlob);
+
+file.close();
+```
+
+**Notes:**
+- Works for any DICOM tag regardless of VR — including non-binary ones.
+- For multi-fragment pixel data, returns the raw concatenated bytes (same as `getPixelData()`).
+- Does not decompress or decode anything.
+
+### Extracting Encapsulated Documents: `getEncapsulatedDocument()`
+
+The idiomatic API for DICOM-encapsulated PDFs, CDA structured reports, and text documents. Reads both the binary payload (tag `0042,0011 – EncapsulatedDocument`) and the MIME type (tag `0042,0012 – MIMETypeOfEncapsulatedDocument`) in one call.
+
+**Return type `EncapsulatedDocumentData`:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mimeType` | `string` | MIME type (defaults to `"application/octet-stream"` if tag absent) |
+| `data` | `Buffer` | Raw document bytes |
+| `byteLength` | `number` | Byte count of the document |
+| `documentTitle` | `string \| null` | Content date from DICOM header (tag 0008,0023), if present |
+
+```typescript
+const file = new DicomFile();
+await file.open('./structured-report.dcm');
+
+const doc = file.getEncapsulatedDocument();
+
+console.log(doc.mimeType);    // 'application/pdf'
+console.log(doc.byteLength);  // e.g. 102400
+
+// Save to disk
+fs.writeFileSync('report.pdf', doc.data);
+
+file.close();
+```
+
+**HTTP response example:**
+
+```typescript
+app.get('/report/:uid', async (req, res) => {
+    const file = new DicomFile();
+    await file.open(`/data/${req.params.uid}.dcm`);
+    const doc = file.getEncapsulatedDocument();
+    file.close();
+
+    res.setHeader('Content-Type', doc.mimeType);
+    res.setHeader('Content-Disposition', 'inline; filename="report.pdf"');
+    res.end(doc.data);
+});
+```
+
+**Distinguishing image vs. document files:**
+
+```typescript
+async function classifyDicom(path: string) {
+    const file = new DicomFile();
+    await file.open(path);
+
+    try {
+        const pixInfo = file.getTagInfo('PixelData');
+        if (pixInfo.isImage) {
+            console.log('This is an image file');
+            const img = file.getImageBuffer({ format: 'Jpeg', applyVoiLut: true, convertTo8bit: true });
+            // handle image...
+            return;
+        }
+    } catch {
+        // no pixel data tag
+    }
+
+    try {
+        const doc = file.getEncapsulatedDocument();
+        console.log(`Encapsulated document: ${doc.mimeType} (${doc.byteLength} bytes)`);
+        // handle document...
+    } catch {
+        console.log('No encapsulated document found');
+    }
+
+    file.close();
+}
+```
+
+### Special Case: Text or Binary Blob Stored in the PixelData Tag
+
+Some non-standard or vendor-specific DICOM files store raw text or binary blobs directly in the PixelData element (7FE0,0010) instead of actual image pixel data. This happens when, for example, a proprietary system places a report attachment or a custom binary payload into that tag using a non-image SOP class.
+
+**How `isImage` detects this:**
+
+`getTagInfo('PixelData')` checks for the presence of the three mandatory image attributes alongside PixelData:
+- `BitsAllocated` (0028,0100)
+- `Rows` (0028,0010)
+- `Columns` (0028,0011)
+
+A real image always has all three. A PixelData tag used to store a blob or text will lack them, so `isImage` is `false` even though `isBinary` is `true`.
+
+```typescript
+const file = new DicomFile();
+await file.open('./custom-blob.dcm');
+
+const info = file.getTagInfo('PixelData');
+console.log(info.vr);         // 'OB' or 'OW'
+console.log(info.isBinary);   // true  — raw bytes
+console.log(info.isImage);    // false — no BitsAllocated/Rows/Columns
+console.log(info.byteLength); // e.g. 4096
+
+if (info.isBinary && !info.isImage) {
+    const buf = file.getTagBytes('PixelData');
+
+    // If you know it is UTF-8 text:
+    const text = buf.toString('utf8');
+    console.log(text);
+
+    // Or save the raw bytes:
+    fs.writeFileSync('payload.bin', buf);
+}
+
+file.close();
+```
+
+**Important notes:**
+- `getImageBuffer()` and `processPixelData()` will still attempt to decode the bytes as an image and will throw. Always gate on `isImage` before calling those methods.
+- `getTagBytes('PixelData')` and `getPixelData()` are identical in behaviour — both return the raw bytes regardless of content.
+
+---
 
 ## Saving Files
 

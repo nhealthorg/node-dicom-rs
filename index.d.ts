@@ -281,7 +281,7 @@ export declare class DicomFile {
    *
    * Advanced pixel data processing supporting:
    * - Raw extraction or decoded/decompressed output
-   * - Multiple output formats (Raw, PNG, JPEG, JSON)
+   * - Multiple output formats (Raw, PNG, JPEG, BMP, JSON)
    * - Frame extraction (single or all frames)
    * - Windowing and 8-bit conversion
    * - VOI LUT application
@@ -512,6 +512,15 @@ export declare class DicomFile {
    * ```
    */
   getProcessedPixelData(options?: PixelDataProcessingOptions | undefined | null): Buffer
+  /** * Get encoded image bytes as Buffer (PNG/JPEG/BMP).
+   *
+   * This returns a fully encoded image in-memory and can be used for HTTP responses,
+   * database blobs, or custom storage without writing to disk first.
+   *
+   * @param options - Optional image buffer options
+   * @returns Buffer with encoded image bytes
+   */
+  getImageBuffer(options?: PixelDataImageBufferOptions | undefined | null): Buffer
   /** * Close the currently opened DICOM file and free memory.
    *
    * Releases the DICOM dataset from memory. After closing, you must call `open()`
@@ -532,6 +541,70 @@ export declare class DicomFile {
    * ```
    */
   close(): void
+  /** * Get metadata about any DICOM tag's data type without reading its bytes.
+   *
+   * Tells you the VR (Value Representation), whether the tag holds binary data,
+   * whether it is image pixel data, and the MIME type (for encapsulated documents).
+   * Use this to decide whether to call `getTagBytes()` or `extract()`.
+   *
+   * @param tagName - Tag name (e.g. "EncapsulatedDocument"), hex "00420011", or "(0042,0011)"
+   * @returns TagDataInfo with type metadata
+   * @throws Error if no file is opened or the tag is not found
+   *
+   * @example
+   * ```typescript
+   * const info = file.getTagInfo('EncapsulatedDocument');
+   * // { vr: 'OB', isBinary: true, isImage: false, mimeType: 'application/pdf', byteLength: 123456 }
+   * if (info.isBinary && !info.isImage) {
+   *   const buf = file.getTagBytes('EncapsulatedDocument');
+   * }
+   * ```
+   */
+  getTagInfo(tagName: string): TagDataInfo
+  /** * Get the raw bytes of any DICOM tag as a Buffer.
+   *
+   * Binary-safe alternative to `extract()`. Works for any VR including OB/OW/UN
+   * (encapsulated PDF, ZIP, text blobs, private binary tags, etc.).
+   * Use `getTagInfo()` first to inspect the VR and MIME type, then consume the buffer
+   * according to your application's needs.
+   *
+   * @param tagName - Tag name, hex, or (GGGG,EEEE) format
+   * @returns Buffer with the raw tag payload
+   * @throws Error if no file is opened or the tag is not found
+   *
+   * @example
+   * ```typescript
+   * // Read an embedded PDF
+   * const buf = file.getTagBytes('EncapsulatedDocument'); // tag 0042,0011
+   * fs.writeFileSync('embedded.pdf', buf);
+   *
+   * // Read a private binary tag
+   * const raw = file.getTagBytes('00091010');
+   * ```
+   */
+  getTagBytes(tagName: string): Buffer
+  /** * Extract an encapsulated document (PDF, text, etc.) from the DICOM file.
+   *
+   * Reads both the MIME type (tag 0042,0012) and the binary payload
+   * (tag 0042,0011 – EncapsulatedDocument) together and returns them as a
+   * typed object. This is the idiomatic way to handle DICOM-encapsulated PDFs,
+   * structured reports, or any non-image content stored in DICOM.
+   *
+   * @returns EncapsulatedDocumentData with mimeType and data Buffer
+   * @throws Error if no file is opened or the document tag is missing
+   *
+   * @example
+   * ```typescript
+   * const doc = file.getEncapsulatedDocument();
+   * console.log(doc.mimeType); // 'application/pdf'
+   * fs.writeFileSync('report.pdf', doc.data);
+   *
+   * // Or serve over HTTP
+   * res.setHeader('Content-Type', doc.mimeType);
+   * res.end(doc.data);
+   * ```
+   */
+  getEncapsulatedDocument(): EncapsulatedDocumentData
 }
 
 /** * DICOM Find SCU (C-FIND) Client
@@ -1975,6 +2048,18 @@ export interface DicomJsonValue {
   value?: Array<string>
 }
 
+/** Encapsulated non-image document stored in a DICOM file */
+export interface EncapsulatedDocumentData {
+  /** MIME type from tag (0042,0012) e.g. "application/pdf" or "text/plain" */
+  mimeType: string
+  /** Raw document bytes */
+  data: Buffer
+  /** Number of bytes in the document */
+  byteLength: number
+  /** Content date from DICOM header, if present */
+  documentTitle?: string
+}
+
 export interface FileErrorData {
   file: string
   error: string
@@ -2506,8 +2591,28 @@ export declare const enum PixelDataFormat {
   Png = 'Png',
   /** JPEG image (requires decode=true) */
   Jpeg = 'Jpeg',
+  /** BMP image (requires decode=true) */
+  Bmp = 'Bmp',
   /** JSON metadata about pixel data */
   Json = 'Json'
+}
+
+/** Options for encoded image buffer output (PNG/JPEG/BMP) */
+export interface PixelDataImageBufferOptions {
+  /** Output format (defaults to PNG) */
+  format?: PixelDataFormat
+  /** Apply VOI LUT (Value of Interest Lookup Table) for windowing */
+  applyVoiLut?: boolean
+  /** Window center for manual windowing (overrides VOI LUT from file) */
+  windowCenter?: number
+  /** Window width for manual windowing (overrides VOI LUT from file) */
+  windowWidth?: number
+  /** Frame number to extract (0-based, for multi-frame images) */
+  frameNumber?: number
+  /** Convert to 8-bit grayscale */
+  convertTo8Bit?: boolean
+  /** JPEG quality (1-100), ignored for PNG/BMP */
+  quality?: number
 }
 
 /** Pixel data information */
@@ -3076,6 +3181,20 @@ export interface StudyHierarchyData {
   /** Patient + Study level tags only */
   tags?: Record<string, string>
   series: Array<SeriesHierarchyData>
+}
+
+/** Metadata about a DICOM tag's data type */
+export interface TagDataInfo {
+  /** DICOM Value Representation (e.g. "OB", "OW", "LO", "UI") */
+  vr: string
+  /** True when the tag holds raw binary bytes (OB/OW/OF/OD/OL/OV/UN) */
+  isBinary: boolean
+  /** True when the tag is the pixel data element (7FE0,0010) */
+  isImage: boolean
+  /** MIME type for encapsulated document tags (0042,0011), otherwise null */
+  mimeType?: string
+  /** Number of raw bytes in the tag payload */
+  byteLength: number
 }
 
 /** Tag scope classification based on DICOM hierarchy */

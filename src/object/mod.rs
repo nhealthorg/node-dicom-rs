@@ -94,8 +94,63 @@ pub enum PixelDataFormat {
     Png,
     /// JPEG image (requires decode=true)
     Jpeg,
+    /// BMP image (requires decode=true)
+    Bmp,
     /// JSON metadata about pixel data
     Json,
+}
+
+/// Metadata about a DICOM tag's data type
+#[napi(object)]
+pub struct TagDataInfo {
+    /// DICOM Value Representation (e.g. "OB", "OW", "LO", "UI")
+    pub vr: String,
+    /// True when the tag holds raw binary bytes (OB/OW/OF/OD/OL/OV/UN)
+    pub is_binary: bool,
+    /// True when the tag is the pixel data element (7FE0,0010)
+    pub is_image: bool,
+    /// MIME type for encapsulated document tags (0042,0011), otherwise null
+    pub mime_type: Option<String>,
+    /// Number of raw bytes in the tag payload
+    pub byte_length: u32,
+}
+
+/// Encapsulated non-image document stored in a DICOM file
+#[napi(object)]
+pub struct EncapsulatedDocumentData {
+    /// MIME type from tag (0042,0012) e.g. "application/pdf" or "text/plain"
+    pub mime_type: String,
+    /// Raw document bytes
+    pub data: napi::bindgen_prelude::Buffer,
+    /// Number of bytes in the document
+    pub byte_length: u32,
+    /// Content date from DICOM header, if present
+    pub document_title: Option<String>,
+}
+
+/// Options for encoded image buffer output (PNG/JPEG/BMP)
+#[napi(object)]
+pub struct PixelDataImageBufferOptions {
+    /// Output format (defaults to PNG)
+    pub format: Option<PixelDataFormat>,
+
+    /// Apply VOI LUT (Value of Interest Lookup Table) for windowing
+    pub apply_voi_lut: Option<bool>,
+
+    /// Window center for manual windowing (overrides VOI LUT from file)
+    pub window_center: Option<f64>,
+
+    /// Window width for manual windowing (overrides VOI LUT from file)
+    pub window_width: Option<f64>,
+
+    /// Frame number to extract (0-based, for multi-frame images)
+    pub frame_number: Option<u32>,
+
+    /// Convert to 8-bit grayscale
+    pub convert_to_8bit: Option<bool>,
+
+    /// JPEG quality (1-100), ignored for PNG/BMP
+    pub quality: Option<u8>,
 }
 
 /// Options for processing pixel data in-memory (return as Buffer)
@@ -992,7 +1047,7 @@ impl DicomFile {
      * 
      * Advanced pixel data processing supporting:
      * - Raw extraction or decoded/decompressed output
-     * - Multiple output formats (Raw, PNG, JPEG, JSON)
+    * - Multiple output formats (Raw, PNG, JPEG, BMP, JSON)
      * - Frame extraction (single or all frames)
      * - Windowing and 8-bit conversion
      * - VOI LUT application
@@ -1087,49 +1142,31 @@ impl DicomFile {
             return Ok(format!("Raw pixel data saved to {} ({} bytes)", options.output_path, data.len()));
         }
         
-        // Image rendering required (PNG/JPEG)
-        if matches!(format, PixelDataFormat::Png) || matches!(format, PixelDataFormat::Jpeg) {
-            use crate::utils::image_processing::{render_dicom_object, ImageRenderOptions, ImageOutputFormat};
-            
-            let dicom_ref = self.dicom_file.lock().unwrap();
-            let obj = dicom_ref.as_ref().unwrap();
-            
-            // Create render options
-            let render_opts = ImageRenderOptions {
-                width: None,
-                height: None,
-                quality: Some(90),
-                window_center: options.window_center.map(|c| c as f32),
-                window_width: options.window_width.map(|w| w as f32),
-                apply_voi_lut: options.apply_voi_lut,
-                rescale_intercept: None, // Read from file
-                rescale_slope: None,     // Read from file
-                convert_to_8bit: options.convert_to_8bit,
-                frame_number: options.frame_number,
-                format: match format {
-                    PixelDataFormat::Png => ImageOutputFormat::Png,
-                    PixelDataFormat::Jpeg => ImageOutputFormat::Jpeg,
-                    _ => unreachable!(),
-                },
-            };
-            
-            // Render directly from DICOM object
-            let output = render_dicom_object(obj, &render_opts)
-                .map_err(|e| napi::Error::from_reason(format!("Rendering failed: {}", e)))?;
-            
-            drop(dicom_ref);
-            
-            // Write to file
+        // Image rendering required (PNG/JPEG/BMP)
+        if matches!(format, PixelDataFormat::Png)
+            || matches!(format, PixelDataFormat::Jpeg)
+            || matches!(format, PixelDataFormat::Bmp)
+        {
+            let (output, format_str) = self
+                .render_image_buffer(
+                    format,
+                    options.frame_number,
+                    options.apply_voi_lut,
+                    options.window_center,
+                    options.window_width,
+                    options.convert_to_8bit,
+                    Some(90),
+                )?;
+
             std::fs::write(&options.output_path, &output)
                 .map_err(|e| napi::Error::from_reason(format!("Failed to write file: {}", e)))?;
-            
-            let format_str = match render_opts.format {
-                ImageOutputFormat::Jpeg => "JPEG",
-                ImageOutputFormat::Png => "PNG",
-                ImageOutputFormat::Bmp => "BMP",
-            };
-            
-            return Ok(format!("{} image saved to {} ({} bytes)", format_str, options.output_path, output.len()));
+
+            return Ok(format!(
+                "{} image saved to {} ({} bytes)",
+                format_str,
+                options.output_path,
+                output.len()
+            ));
         }
         
         // Fallback: decoded raw format
@@ -1488,10 +1525,6 @@ impl DicomFile {
             return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
         }
         
-        use crate::utils::image_processing::{
-            render_dicom_object, ImageRenderOptions, ImageOutputFormat
-        };
-        
         let opts = options.unwrap_or(PixelDataProcessingOptions {
             frame_number: None,
             apply_voi_lut: None,
@@ -1499,30 +1532,18 @@ impl DicomFile {
             window_width: None,
             convert_to_8bit: None,
         });
-        
-        let dicom_ref = self.dicom_file.lock().unwrap();
-        let obj = dicom_ref.as_ref().unwrap();
-        
-        // Create render options - use BMP format as it produces uncompressed raw RGB data
-        let render_opts = ImageRenderOptions {
-            width: None,  // Keep original dimensions
-            height: None,
-            quality: None, // Not used for BMP
-            window_center: opts.window_center.map(|c| c as f32),
-            window_width: opts.window_width.map(|w| w as f32),
-            apply_voi_lut: opts.apply_voi_lut,
-            rescale_intercept: None, // Read from file
-            rescale_slope: None,     // Read from file
-            convert_to_8bit: opts.convert_to_8bit,
-            frame_number: opts.frame_number,
-            format: ImageOutputFormat::Bmp, // BMP for raw pixel access
-        };
-        
-        // Use the shared utility to process pixel data
-        let bmp_data = render_dicom_object(obj, &render_opts)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to process pixel data: {}", e))))?;
-        
-        drop(dicom_ref);
+
+        let (bmp_data, _) = self
+            .render_image_buffer(
+            PixelDataFormat::Bmp,
+            opts.frame_number,
+            opts.apply_voi_lut,
+            opts.window_center,
+            opts.window_width,
+            opts.convert_to_8bit,
+            None,
+        )
+            .map_err(JsError::from)?;
         
         // BMP file format: 14-byte file header + 40-byte DIB header + pixel data
         // Skip the headers to get raw pixel data
@@ -1538,6 +1559,108 @@ impl DicomFile {
         let pixel_data = &bmp_data[BMP_HEADER_SIZE..];
         
         Ok(pixel_data.to_vec().into())
+    }
+
+    /**
+     * Get encoded image bytes as Buffer (PNG/JPEG/BMP).
+     *
+     * This returns a fully encoded image in-memory and can be used for HTTP responses,
+     * database blobs, or custom storage without writing to disk first.
+     *
+     * @param options - Optional image buffer options
+     * @returns Buffer with encoded image bytes
+     */
+    #[napi]
+    pub fn get_image_buffer(
+        &self,
+        options: Option<PixelDataImageBufferOptions>,
+    ) -> Result<napi::bindgen_prelude::Buffer, JsError> {
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(JsError::from(napi::Error::from_reason(
+                "File not opened. Call open() first.".to_string(),
+            )));
+        }
+
+        let opts = options.unwrap_or(PixelDataImageBufferOptions {
+            format: Some(PixelDataFormat::Png),
+            apply_voi_lut: None,
+            window_center: None,
+            window_width: None,
+            frame_number: None,
+            convert_to_8bit: None,
+            quality: Some(90),
+        });
+
+        let format = opts.format.unwrap_or(PixelDataFormat::Png);
+
+        let (bytes, _) = self
+            .render_image_buffer(
+                format,
+                opts.frame_number,
+                opts.apply_voi_lut,
+                opts.window_center,
+                opts.window_width,
+                opts.convert_to_8bit,
+                opts.quality,
+            )
+            .map_err(JsError::from)?;
+
+        Ok(bytes.into())
+    }
+
+    fn render_image_buffer(
+        &self,
+        format: PixelDataFormat,
+        frame_number: Option<u32>,
+        apply_voi_lut: Option<bool>,
+        window_center: Option<f64>,
+        window_width: Option<f64>,
+        convert_to_8bit: Option<bool>,
+        quality: Option<u8>,
+    ) -> napi::Result<(Vec<u8>, &'static str)> {
+        use crate::utils::image_processing::{render_dicom_object, ImageOutputFormat, ImageRenderOptions};
+
+        let (output_format, format_label) = match format {
+            PixelDataFormat::Png => (ImageOutputFormat::Png, "PNG"),
+            PixelDataFormat::Jpeg => (ImageOutputFormat::Jpeg, "JPEG"),
+            PixelDataFormat::Bmp => (ImageOutputFormat::Bmp, "BMP"),
+            PixelDataFormat::Raw => {
+                return Err(napi::Error::from_reason(
+                    "Raw format is not an encoded image. Use getPixelData() or processPixelData({ format: 'Raw' })."
+                        .to_string(),
+                ));
+            }
+            PixelDataFormat::Json => {
+                return Err(napi::Error::from_reason(
+                    "Json format is metadata, not image data. Use toJson() or processPixelData({ format: 'Json' })."
+                        .to_string(),
+                ));
+            }
+        };
+
+        let clamped_quality = quality.map(|q| q.clamp(1, 100));
+
+        let dicom_ref = self.dicom_file.lock().unwrap();
+        let obj = dicom_ref.as_ref().unwrap();
+
+        let render_opts = ImageRenderOptions {
+            width: None,
+            height: None,
+            quality: clamped_quality,
+            window_center: window_center.map(|c| c as f32),
+            window_width: window_width.map(|w| w as f32),
+            apply_voi_lut,
+            rescale_intercept: None,
+            rescale_slope: None,
+            convert_to_8bit,
+            frame_number,
+            format: output_format,
+        };
+
+        let output = render_dicom_object(obj, &render_opts)
+            .map_err(|e| napi::Error::from_reason(format!("Rendering failed: {}", e)))?;
+
+        Ok((output, format_label))
     }
 
     // Helper method to convert DICOM to JSON string (used by both to_json and save_as_json)
@@ -1582,6 +1705,194 @@ impl DicomFile {
     #[napi]
     pub fn close(&self) {
         *self.dicom_file.lock().unwrap() = None;
+    }
+
+    /**
+     * Get metadata about any DICOM tag's data type without reading its bytes.
+     *
+     * Tells you the VR (Value Representation), whether the tag holds binary data,
+     * whether it is image pixel data, and the MIME type (for encapsulated documents).
+     * Use this to decide whether to call `getTagBytes()` or `extract()`.
+     *
+     * @param tagName - Tag name (e.g. "EncapsulatedDocument"), hex "00420011", or "(0042,0011)"
+     * @returns TagDataInfo with type metadata
+     * @throws Error if no file is opened or the tag is not found
+     *
+     * @example
+     * ```typescript
+     * const info = file.getTagInfo('EncapsulatedDocument');
+     * // { vr: 'OB', isBinary: true, isImage: false, mimeType: 'application/pdf', byteLength: 123456 }
+     * if (info.isBinary && !info.isImage) {
+     *   const buf = file.getTagBytes('EncapsulatedDocument');
+     * }
+     * ```
+     */
+    #[napi]
+    pub fn get_tag_info(&self, tag_name: String) -> Result<TagDataInfo, JsError> {
+        use crate::utils::dicom_tags::parse_tag;
+        use dicom_core::value::Value;
+
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+        }
+
+        let tag = parse_tag(&tag_name)
+            .map_err(|e| JsError::from(napi::Error::from_reason(e)))?;
+
+        let dicom_ref = self.dicom_file.lock().unwrap();
+        let obj = dicom_ref.as_ref().unwrap();
+
+        let elem = obj.element(tag)
+            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Tag not found: {}", e))))?;
+
+        let vr = elem.vr();
+        let vr_str = format!("{:?}", vr);
+
+        // VRs that carry raw binary payloads (not string-representable)
+        let is_binary = matches!(vr,
+            dicom_core::VR::OB | dicom_core::VR::OW | dicom_core::VR::OF |
+            dicom_core::VR::OD | dicom_core::VR::OL | dicom_core::VR::OV |
+            dicom_core::VR::UN
+        );
+
+        // PixelData tag (7FE0,0010) is only a real image when the mandatory image
+        // attributes BitsAllocated, Rows and Columns are also present.
+        // If PixelData holds a text/binary blob (non-image SOP classes) those tags
+        // are absent, so is_image will be false.
+        let is_image = tag == tags::PIXEL_DATA
+            && obj.element(tags::BITS_ALLOCATED).is_ok()
+            && obj.element(tags::ROWS).is_ok()
+            && obj.element(tags::COLUMNS).is_ok();
+
+        // Byte length from the element value
+        let byte_length = elem.to_bytes()
+            .map(|b| b.len() as u32)
+            .unwrap_or(0);
+
+        // MIME type for encapsulated documents (0042,0012 = MIMETypeOfEncapsulatedDocument)
+        let mime_type = if tag == Tag(0x0042, 0x0011) {
+            // This IS the document tag; look up its MIME sibling
+            obj.element(Tag(0x0042, 0x0012))
+                .ok()
+                .and_then(|e| e.to_str().ok())
+                .map(|s| s.trim().to_string())
+        } else {
+            None
+        };
+
+        Ok(TagDataInfo {
+            vr: vr_str,
+            is_binary,
+            is_image,
+            mime_type,
+            byte_length,
+        })
+    }
+
+    /**
+     * Get the raw bytes of any DICOM tag as a Buffer.
+     *
+     * Binary-safe alternative to `extract()`. Works for any VR including OB/OW/UN
+     * (encapsulated PDF, ZIP, text blobs, private binary tags, etc.).
+     * Use `getTagInfo()` first to inspect the VR and MIME type, then consume the buffer
+     * according to your application's needs.
+     *
+     * @param tagName - Tag name, hex, or (GGGG,EEEE) format
+     * @returns Buffer with the raw tag payload  
+     * @throws Error if no file is opened or the tag is not found
+     *
+     * @example
+     * ```typescript
+     * // Read an embedded PDF
+     * const buf = file.getTagBytes('EncapsulatedDocument'); // tag 0042,0011
+     * fs.writeFileSync('embedded.pdf', buf);
+     *
+     * // Read a private binary tag
+     * const raw = file.getTagBytes('00091010');
+     * ```
+     */
+    #[napi]
+    pub fn get_tag_bytes(&self, tag_name: String) -> Result<napi::bindgen_prelude::Buffer, JsError> {
+        use crate::utils::dicom_tags::parse_tag;
+
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+        }
+
+        let tag = parse_tag(&tag_name)
+            .map_err(|e| JsError::from(napi::Error::from_reason(e)))?;
+
+        let dicom_ref = self.dicom_file.lock().unwrap();
+        let obj = dicom_ref.as_ref().unwrap();
+
+        let elem = obj.element(tag)
+            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Tag not found: {}", e))))?;
+
+        let bytes = elem.to_bytes()
+            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read tag bytes: {}", e))))?;
+
+        Ok(bytes.to_vec().into())
+    }
+
+    /**
+     * Extract an encapsulated document (PDF, text, etc.) from the DICOM file.
+     *
+     * Reads both the MIME type (tag 0042,0012) and the binary payload
+     * (tag 0042,0011 – EncapsulatedDocument) together and returns them as a
+     * typed object. This is the idiomatic way to handle DICOM-encapsulated PDFs,
+     * structured reports, or any non-image content stored in DICOM.
+     *
+     * @returns EncapsulatedDocumentData with mimeType and data Buffer
+     * @throws Error if no file is opened or the document tag is missing
+     *
+     * @example
+     * ```typescript
+     * const doc = file.getEncapsulatedDocument();
+     * console.log(doc.mimeType); // 'application/pdf'
+     * fs.writeFileSync('report.pdf', doc.data);
+     *
+     * // Or serve over HTTP
+     * res.setHeader('Content-Type', doc.mimeType);
+     * res.end(doc.data);
+     * ```
+     */
+    #[napi]
+    pub fn get_encapsulated_document(&self) -> Result<EncapsulatedDocumentData, JsError> {
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+        }
+
+        let dicom_ref = self.dicom_file.lock().unwrap();
+        let obj = dicom_ref.as_ref().unwrap();
+
+        // (0042,0011) EncapsulatedDocument
+        let doc_elem = obj.element(Tag(0x0042, 0x0011))
+            .map_err(|_| JsError::from(napi::Error::from_reason(
+                "EncapsulatedDocument tag (0042,0011) not found. This DICOM file does not contain an encapsulated document.".to_string()
+            )))?;
+
+        let data = doc_elem.to_bytes()
+            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read encapsulated document bytes: {}", e))))?;
+
+        // (0042,0012) MIMETypeOfEncapsulatedDocument
+        let mime_type = obj.element(Tag(0x0042, 0x0012))
+            .ok()
+            .and_then(|e| e.to_str().ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        // (0008,0016) SOPClassUID – useful for context
+        let document_title = obj.element(tags::CONTENT_DATE)
+            .ok()
+            .and_then(|e| e.to_str().ok())
+            .map(|s| s.trim().to_string());
+
+        Ok(EncapsulatedDocumentData {
+            mime_type,
+            data: data.to_vec().into(),
+            byte_length: data.len() as u32,
+            document_title,
+        })
     }
 
     fn check_file(file: &Path) -> Result<DicomFileMeta, Error> {
