@@ -732,13 +732,14 @@ impl QidoServer {
                 .or(series_instances_route)
                 .with(cors);
             
-            let (_addr, server) = warp::serve(routes)
-                .bind_with_graceful_shutdown(([0, 0, 0, 0], port), async {
-                    shutdown_rx.await.ok();
-                });
-            
+            let bound = warp::serve(routes)
+                .bind(([0, 0, 0, 0], port)).await;
+
             eprintln!("✓ QIDO server listening on http://0.0.0.0:{}", port);
-            server.await;
+            bound.graceful(async {
+                shutdown_rx.await.ok();
+            })
+            .run().await;
         });
         
         Ok(())

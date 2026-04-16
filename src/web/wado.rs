@@ -6,7 +6,7 @@ use tokio::runtime::Runtime;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use warp::{Filter, Reply, reply::Response, http::StatusCode};
-use warp::hyper::body::Bytes;
+use bytes::Bytes;
 use dicom_object::open_file;
 
 use crate::utils::S3Config;
@@ -382,16 +382,17 @@ impl WadoServer {
                 .with(cors)
                 .recover(handle_rejection);
 
-            let (_, server) = warp::serve(routes)
-                .bind_with_graceful_shutdown(([0, 0, 0, 0], port), async {
-                    shutdown_rx.await.ok();
-                });
+            let bound = warp::serve(routes)
+                .bind(([0, 0, 0, 0], port)).await;
 
             if config.verbose.unwrap_or(false) {
                 println!("WADO-RS server started on port {}", port);
             }
 
-            server.await;
+            bound.graceful(async {
+                shutdown_rx.await.ok();
+            })
+            .run().await;
         });
 
         self.shutdown_tx = Some(shutdown_tx);
