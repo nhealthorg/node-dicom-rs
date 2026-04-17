@@ -92,6 +92,8 @@ pub struct GetScuOptions {
     pub forward_target: Option<ForwardTargetConfig>,
     /// If true, fail C-GET when forwarding a received instance fails
     pub strict_forward: Option<bool>,
+    /// Store complete DICOM files with meta header vs dataset-only (default: true)
+    pub store_with_file_meta: Option<bool>,
 }
 
 /// Event emitted for each sub-operation (file being retrieved)
@@ -207,6 +209,7 @@ pub struct GetScu {
     s3_config: Option<S3Config>,
     forward_target: Option<ForwardTargetConfig>,
     strict_forward: bool,
+    store_with_file_meta: bool,
 }
 
 #[napi]
@@ -240,6 +243,7 @@ impl GetScu {
             s3_config: options.s3_config,
             forward_target: options.forward_target,
             strict_forward: options.strict_forward.unwrap_or(false),
+            store_with_file_meta: options.store_with_file_meta.unwrap_or(true),
         })
     }
 
@@ -291,6 +295,7 @@ impl GetScu {
             s3_config: self.s3_config.clone(),
             forward_target: self.forward_target.clone(),
             strict_forward: self.strict_forward,
+            store_with_file_meta: self.store_with_file_meta,
             query_model: query_model_enum,
             on_sub_operation: on_sub_operation.map(Arc::new),
             on_completed: on_completed.map(Arc::new),
@@ -311,6 +316,7 @@ pub struct GetArgs {
     pub s3_config: Option<S3Config>,
     pub forward_target: Option<ForwardTargetConfig>,
     pub strict_forward: bool,
+    pub store_with_file_meta: bool,
     pub query_model: GetQueryModel,
 }
 
@@ -332,6 +338,7 @@ pub struct GetHandler {
     s3_config: Option<S3Config>,
     forward_target: Option<ForwardTargetConfig>,
     strict_forward: bool,
+    store_with_file_meta: bool,
     query_model: GetQueryModel,
     on_sub_operation: Option<Arc<ThreadsafeFunction<GetSubOperationEvent>>>,
     on_completed: Option<Arc<ThreadsafeFunction<GetCompletedEvent>>>,
@@ -355,6 +362,7 @@ impl Task for GetHandler {
             s3_config: self.s3_config.clone(),
             forward_target: self.forward_target.clone(),
             strict_forward: self.strict_forward,
+            store_with_file_meta: self.store_with_file_meta,
             query_model: self.query_model,
         };
 

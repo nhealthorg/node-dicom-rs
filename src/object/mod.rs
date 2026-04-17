@@ -422,10 +422,8 @@ impl DicomFile {
                     },
                     Err(_) => {
                         // Failed with Auto, try dataset-only (no meta header)
-                        // First read as InMemDicomObject to get dataset
-                        let mem_obj = InMemDicomObject::read_dataset_with_ts(&data[..], 
-                            &dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN.erased())
-                            .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM dataset from S3: {}", e)))?;
+                        // Try multiple transfer syntaxes
+                        let mem_obj = self.try_read_dataset_with_multiple_ts(&data, &path)?;
                         
                         // Extract necessary info to build meta header
                         let sop_class_uid = mem_obj.element(tags::SOP_CLASS_UID)
@@ -440,11 +438,9 @@ impl DicomFile {
                             .map(|s| s.trim().to_string())
                             .ok_or_else(|| napi::Error::from_reason("SOP Instance UID not found in dataset".to_string()))?;
                         
-                        let transfer_syntax = mem_obj.element(tags::TRANSFER_SYNTAX_UID)
-                            .ok()
-                            .and_then(|e| e.to_str().ok())
-                            .map(|s| s.trim().to_string())
-                            .unwrap_or_else(|| uids::IMPLICIT_VR_LITTLE_ENDIAN.to_string());
+                        // For dataset-only files, we don't have a reliable transfer syntax from the data
+                        // Use the one we successfully parsed with
+                        let transfer_syntax = uids::EXPLICIT_VR_LITTLE_ENDIAN.to_string();
                         
                         // Build proper file meta information
                         let meta = FileMetaTableBuilder::new()
@@ -481,10 +477,8 @@ impl DicomFile {
                         let file_data = std::fs::read(&resolved_path)
                             .map_err(|e| napi::Error::from_reason(format!("Failed to read file: {}", e)))?;
                         
-                        // Read as InMemDicomObject to get dataset
-                        let mem_obj = InMemDicomObject::read_dataset_with_ts(&file_data[..], 
-                            &dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN.erased())
-                            .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM dataset: {}", e)))?;
+                        // Try multiple transfer syntaxes
+                        let mem_obj = self.try_read_dataset_with_multiple_ts(&file_data, path.as_str())?;
                         
                         // Extract necessary info to build meta header
                         let sop_class_uid = mem_obj.element(tags::SOP_CLASS_UID)
@@ -499,11 +493,9 @@ impl DicomFile {
                             .map(|s| s.trim().to_string())
                             .ok_or_else(|| napi::Error::from_reason("SOP Instance UID not found in dataset".to_string()))?;
                         
-                        let transfer_syntax = mem_obj.element(tags::TRANSFER_SYNTAX_UID)
-                            .ok()
-                            .and_then(|e| e.to_str().ok())
-                            .map(|s| s.trim().to_string())
-                            .unwrap_or_else(|| uids::IMPLICIT_VR_LITTLE_ENDIAN.to_string());
+                        // For dataset-only files, we don't have a reliable transfer syntax from the data
+                        // Use the one we successfully parsed with
+                        let transfer_syntax = uids::EXPLICIT_VR_LITTLE_ENDIAN.to_string();
                         
                         // Build proper file meta information
                         let meta = FileMetaTableBuilder::new()
@@ -524,6 +516,47 @@ impl DicomFile {
                 Ok(format!("File opened successfully (dataset-only, meta created): {}", resolved_path.display()))
             }
         }
+    }
+    
+    // Helper method to try reading dataset with multiple transfer syntaxes
+    fn try_read_dataset_with_multiple_ts(&self, data: &[u8], path: &str) -> napi::Result<dicom_object::InMemDicomObject> {
+        use dicom_object::InMemDicomObject;
+        
+        let mut last_error = None;
+        
+        // Try IMPLICIT_VR_LITTLE_ENDIAN (most common for dataset-only files)
+        match InMemDicomObject::read_dataset_with_ts(
+            data, 
+            &dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN.erased()
+        ) {
+            Ok(obj) => return Ok(obj),
+            Err(e) => last_error = Some(e),
+        }
+        
+        // Try EXPLICIT_VR_LITTLE_ENDIAN
+        match InMemDicomObject::read_dataset_with_ts(
+            data,
+            &dicom_transfer_syntax_registry::entries::EXPLICIT_VR_LITTLE_ENDIAN.erased()
+        ) {
+            Ok(obj) => return Ok(obj),
+            Err(e) => last_error = Some(e),
+        }
+        
+        // Try EXPLICIT_VR_BIG_ENDIAN
+        match InMemDicomObject::read_dataset_with_ts(
+            data,
+            &dicom_transfer_syntax_registry::entries::EXPLICIT_VR_BIG_ENDIAN.erased()
+        ) {
+            Ok(obj) => return Ok(obj),
+            Err(e) => last_error = Some(e),
+        }
+        
+        // If all attempts failed, return the last error
+        Err(napi::Error::from_reason(format!(
+            "Failed to parse DICOM dataset from {} with any supported transfer syntax. Last error: {}",
+            path,
+            last_error.map(|e| e.to_string()).unwrap_or_else(|| "Unknown error".to_string())
+        )))
     }
 
     /**

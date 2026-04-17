@@ -1,6 +1,6 @@
 {
   "name": "@nuxthealth/node-dicom",
-  "version": "0.3.0-beta.3",
+  "version": "0.3.0-beta.4",
   "type": "commonjs",
   "main": "index.js",
   "types": "index.d.ts",

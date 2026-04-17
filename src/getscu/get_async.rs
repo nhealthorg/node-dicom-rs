@@ -209,6 +209,7 @@ async fn store_dicom_file(
     storage_backend: &GetStorageBackend,
     out_dir: &Option<String>,
     s3_bucket: &Option<s3::Bucket>,
+    store_with_file_meta: bool,
     verbose: bool,
 ) -> Result<String, GetScuError> {
     // Extract key identifiers
@@ -262,21 +263,31 @@ async fn store_dicom_file(
 
             let file_path = file_dir.join(format!("{}.dcm", instance_uid));
 
-            // Write DICOM file (dataset-only, without file meta)
+            // Write DICOM file - with or without file meta header based on config
             let mut file_data = Vec::new();
-            let ts = TransferSyntaxRegistry
-                .get(dicom_obj.meta().transfer_syntax())
-                .ok_or_else(|| GetScuError::Other {
-                    message: format!(
-                        "Unknown transfer syntax: {}",
-                        dicom_obj.meta().transfer_syntax()
-                    ),
-                })?;
-            dicom_obj
-                .write_dataset_with_ts(&mut file_data, ts)
-                .map_err(|e| GetScuError::Other {
-                    message: format!("Failed to write dataset: {}", e),
-                })?;
+            if store_with_file_meta {
+                // Write complete DICOM file with preamble and meta header
+                dicom_obj
+                    .write_all(&mut file_data)
+                    .map_err(|e| GetScuError::Other {
+                        message: format!("Failed to write DICOM file: {}", e),
+                    })?;
+            } else {
+                // Write dataset-only (no preamble, no meta header)
+                let ts = TransferSyntaxRegistry
+                    .get(dicom_obj.meta().transfer_syntax())
+                    .ok_or_else(|| GetScuError::Other {
+                        message: format!(
+                            "Unknown transfer syntax: {}",
+                            dicom_obj.meta().transfer_syntax()
+                        ),
+                    })?;
+                dicom_obj
+                    .write_dataset_with_ts(&mut file_data, ts)
+                    .map_err(|e| GetScuError::Other {
+                        message: format!("Failed to write dataset: {}", e),
+                    })?;
+            }
 
             tokio::fs::write(&file_path, file_data).await.map_err(|e| GetScuError::Io {
                 source: e,
@@ -295,21 +306,31 @@ async fn store_dicom_file(
 
             let key = format!("{}/{}/{}.dcm", study_uid, series_uid, instance_uid);
 
-            // Write DICOM file to buffer
+            // Write DICOM file to buffer - with or without file meta header based on config
             let mut file_data = Vec::new();
-            let ts = TransferSyntaxRegistry
-                .get(dicom_obj.meta().transfer_syntax())
-                .ok_or_else(|| GetScuError::Other {
-                    message: format!(
-                        "Unknown transfer syntax: {}",
-                        dicom_obj.meta().transfer_syntax()
-                    ),
-                })?;
-            dicom_obj
-                .write_dataset_with_ts(&mut file_data, ts)
-                .map_err(|e| GetScuError::Other {
-                    message: format!("Failed to write dataset: {}", e),
-                })?;
+            if store_with_file_meta {
+                // Write complete DICOM file with preamble and meta header
+                dicom_obj
+                    .write_all(&mut file_data)
+                    .map_err(|e| GetScuError::Other {
+                        message: format!("Failed to write DICOM file: {}", e),
+                    })?;
+            } else {
+                // Write dataset-only (no preamble, no meta header)
+                let ts = TransferSyntaxRegistry
+                    .get(dicom_obj.meta().transfer_syntax())
+                    .ok_or_else(|| GetScuError::Other {
+                        message: format!(
+                            "Unknown transfer syntax: {}",
+                            dicom_obj.meta().transfer_syntax()
+                        ),
+                    })?;
+                dicom_obj
+                    .write_dataset_with_ts(&mut file_data, ts)
+                    .map_err(|e| GetScuError::Other {
+                        message: format!("Failed to write dataset: {}", e),
+                    })?;
+            }
 
             // Upload to S3
             s3_put_object(bucket, &key, &file_data)
@@ -804,6 +825,7 @@ pub async fn run_get(
                                                 &args.storage_backend,
                                                 &args.out_dir,
                                                 &s3_bucket,
+                                                args.store_with_file_meta,
                                                 args.verbose,
                                             )
                                             .await?);

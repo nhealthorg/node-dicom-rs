@@ -63,6 +63,7 @@ console.log(`Retrieved ${result.completed} of ${result.total} instances`);
 | `s3Config` | object | No | - | S3 configuration (required when `storageBackend` is `S3`) |
 | `forwardTarget` | object | No | - | Destination PACS configuration (required when `storageBackend` is `Forward`) |
 | `strictForward` | boolean | No | `false` | If true, fail C-GET when forwarding any instance fails |
+| `storeWithFileMeta` | boolean | No | `true` | Store complete DICOM files with preamble and meta header (recommended) |
 
 ## getStudy() API
 
@@ -258,6 +259,52 @@ onCompleted: (err, event) => {
 - `failed`
 - `warning`
 - `durationSeconds`
+
+## File Storage Format
+
+By default, retrieved DICOM files are stored with **complete DICOM Part-10 format** (preamble + "DICM" marker + meta header + dataset). This ensures compatibility with all DICOM viewers and tools.
+
+### Default (Recommended): With File Meta Header
+
+```javascript
+const getScu = new GetScu({
+  addr: '127.0.0.1:4242',
+  callingAeTitle: 'GET-SCU',
+  calledAeTitle: 'ORTHANC',
+  outDir: './retrieved',
+  storeWithFileMeta: true  // default
+});
+```
+
+✅ **Benefits:**
+- Standard DICOM Part-10 compliant files
+- Compatible with all DICOM viewers
+- Can be reopened with `DicomFile.open()`
+- Includes transfer syntax and SOP class information
+- Suitable for archival storage
+
+### Dataset-Only Format (Advanced)
+
+```javascript
+const getScu = new GetScu({
+  addr: '127.0.0.1:4242',
+  callingAeTitle: 'GET-SCU',
+  calledAeTitle: 'ORTHANC',
+  outDir: './retrieved',
+  storeWithFileMeta: false  // dataset-only
+});
+```
+
+⚠️ **Use only when:**
+- Custom PACS requires dataset-only format
+- Temporary storage for immediate retransmission
+- Storage space is extremely critical
+- You have specific requirements for non-standard format
+
+❌ **Limitations:**
+- Not compatible with standard DICOM viewers
+- Missing meta information (transfer syntax, etc.)
+- Not readable by most DICOM tools
 
 ## C-GET vs C-MOVE
 

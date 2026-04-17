@@ -228,39 +228,47 @@ s3Config: {
 #### storeWithFileMeta
 
 **Type:** `boolean` (optional)  
-**Default:** `false`
+**Default:** `true`
 
 Whether to include DICOM File Meta Information header when storing files.
 
 ```typescript
-// Without file meta (default) - just dataset
-storeWithFileMeta: false
-
-// With file meta - complete DICOM file
+// With file meta (default) - complete DICOM file
 storeWithFileMeta: true
+
+// Without file meta - just dataset (advanced use case)
+storeWithFileMeta: false
 ```
 
+**With File Meta (true - default):**
+- ✅ Stores complete DICOM Part-10 compliant file
+- ✅ Includes preamble, "DICM" marker, and meta header
+- ✅ Contains Transfer Syntax UID, SOP Class UID, etc.
+- ✅ Compatible with DICOM viewers and standard tools
+- ✅ Can be reopened with `DicomFile.open()`
+- ✅ Ready for archival storage
+- **Recommended for most use cases**
+
 **Without File Meta (false):**
-- Stores only the DICOM dataset
-- Smaller file size (~128 bytes less)
-- Can be re-wrapped with new meta later
-- Common for archival storage
+- Stores only the DICOM dataset (no preamble or meta)
+- Smaller file size (~150-200 bytes less per file)
+- Only suitable for specialized PACS internal storage
+- **Not compatible** with standard DICOM viewers
+- **Not compatible** with most DICOM tools
+- Use only if you have specific requirements for dataset-only format
 
-**With File Meta (true):**
-- Stores complete DICOM file including header
-- Includes Transfer Syntax UID, Implementation Class UID, etc.
-- Ready for immediate re-transmission
-- Preserves original file structure
+**When to Use `false`:**
+- Custom PACS system that prefers dataset-only format
+- Temporary storage for immediate network retransmission
+- Storage space is extremely critical
+- You understand DICOM file structure and have specific needs
 
-**When to Enable:**
-- Need to preserve exact file structure
-- Files will be re-transmitted without modification
-- Compatibility with tools that expect file meta
-
-**When to Disable (default):**
-- Optimize storage space
-- Only care about DICOM dataset
-- Will process/transform data before re-transmission
+**When to Use `true` (recommended):**
+- General archival storage
+- Files will be viewed with DICOM viewers
+- Files will be reopened or processed later
+- Standard DICOM file format compliance is needed
+- **Use this unless you have a specific reason not to**
 
 #### strict
 
@@ -1092,11 +1100,11 @@ const debugReceiver = new StoreScp({
 
 8. **Consider storage format needs**
    ```typescript
-   // Archival - no file meta needed
-   storeWithFileMeta: false
-   
-   // Re-transmission - preserve structure
+   // Standard archival (default, recommended)
    storeWithFileMeta: true
+   
+   // Dataset-only for specialized PACS storage
+   storeWithFileMeta: false
    ```
 
 ### Troubleshooting Configuration Issues
@@ -2087,7 +2095,6 @@ const receiver = new StoreScp({
     // Storage
     storageBackend: 'Filesystem',
     outDir: './dicom-archive',
-    storeWithFileMeta: false,
     
     // Tag Extraction
     extractTags: [
