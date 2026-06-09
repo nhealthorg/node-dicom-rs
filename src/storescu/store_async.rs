@@ -40,6 +40,7 @@ pub async fn send_file(
     callbacks: &StoreCallbacks,
     successful_count: Arc<Mutex<u32>>,
     failed_count: Arc<Mutex<u32>>,
+    timeout_seconds: u32,
 ) -> Result<dicom_ul::association::client::AsyncClientAssociation<TcpStream>, Error>
 {
     let start_time = std::time::Instant::now();
@@ -229,7 +230,19 @@ pub async fn send_file(
             debug!("Awaiting response...");
         }
 
-        let rsp_pdu = scu.receive().await.map_err(Box::from).context(ScuSnafu)?;
+        // Wait for response with configurable timeout to avoid hanging indefinitely
+        if verbose {
+            error!("C-STORE response timeout after {} seconds", timeout_seconds);
+        }
+        
+        let rsp_pdu = tokio::time::timeout(
+            tokio::time::Duration::from_secs(timeout_seconds as u64),
+            scu.receive()
+        )
+        .await
+        .map_err(|_| Error::NoNegotiatedTransferSyntax)?
+        .map_err(Box::from)
+        .context(ScuSnafu)?;
 
         match rsp_pdu {
             Pdu::PData { data } => {
@@ -378,6 +391,7 @@ pub async fn inner(
     successful_count: Arc<Mutex<u32>>,
     failed_count: Arc<Mutex<u32>>,
     throttle_delay_ms: u32,
+    timeout_seconds: u32,
 ) -> Result<(), Error>
 {
     let mut message_id = 1;
@@ -420,7 +434,7 @@ pub async fn inner(
                 }
             }
         }
-        scu = send_file(scu, file, s3_bucket.as_deref(), message_id, progress_bar, verbose, fail_first, callbacks, successful_count.clone(), failed_count.clone()).await?;
+        scu = send_file(scu, file, s3_bucket.as_deref(), message_id, progress_bar, verbose, fail_first, callbacks, successful_count.clone(), failed_count.clone(), timeout_seconds).await?;
         message_id += 1;
         
         // Apply throttle delay if configured (rate limiting)

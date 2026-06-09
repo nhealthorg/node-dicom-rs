@@ -293,6 +293,8 @@ pub struct StoreScu {
     concurrency: Option<u32>,
     /// Throttle delay in milliseconds between sending each file
     throttle_delay_ms: u32,
+    /// Timeout in seconds for waiting for C-STORE responses from the SCP
+    timeout_seconds: u32,
 }
 
 struct DicomFile {
@@ -474,7 +476,9 @@ pub struct StoreScuOptions {
     /// S3 configuration for reading files from S3 storage (required if using S3 paths)
     pub s3_config: Option<S3Config>,
     /// Delay in milliseconds between sending each file for throttling/rate limiting (default: 0, no delay)
-    pub throttle_delay_ms: Option<u32>
+    pub throttle_delay_ms: Option<u32>,
+    /// Timeout in seconds for waiting for C-STORE responses from the SCP (default: 30)
+    pub timeout_seconds: Option<u32>,
 }
 
 #[napi]
@@ -523,6 +527,7 @@ impl StoreScu {
     pub fn new(options: StoreScuOptions) -> Self {
         let file_sources: Vec<FileSource> = vec![];
         let throttle_delay_ms = options.throttle_delay_ms.unwrap_or(0);
+        let timeout_seconds = options.timeout_seconds.unwrap_or(30);
         let mut verbose: bool = false;
         if options.verbose.is_some() {
             verbose = options.verbose.unwrap();
@@ -593,6 +598,7 @@ impl StoreScu {
             jwt: options.jwt.or(None),
             concurrency: concurrency,
             throttle_delay_ms: throttle_delay_ms,
+            timeout_seconds: timeout_seconds,
         }
     }
 
@@ -859,6 +865,7 @@ impl StoreScu {
             never_transcode: self.never_transcode,
             ignore_sop_class: self.ignore_sop_class,
             throttle_delay_ms: self.throttle_delay_ms,
+            timeout_seconds: self.timeout_seconds,
             username: self.username.clone(),
             password: self.password.clone(),
             kerberos_service_ticket: self.kerberos_service_ticket.clone(),
@@ -893,6 +900,7 @@ pub struct StoreScuHandler {
     jwt: Option<String>,
     concurrency: Option<u32>,
     throttle_delay_ms: u32,
+    timeout_seconds: u32,
     on_transfer_started: Option<Arc<ThreadsafeFunction<TransferStartedEvent, ()>>>,
     on_file_sending: Option<Arc<ThreadsafeFunction<FileSendingEvent, ()>>>,
     on_file_sent: Option<Arc<ThreadsafeFunction<FileSentEvent, ()>>>,
@@ -925,6 +933,7 @@ impl napi::Task for StoreScuHandler {
             jwt: self.jwt.clone(),
             concurrency: self.concurrency,
             throttle_delay_ms: self.throttle_delay_ms,
+            timeout_seconds: self.timeout_seconds,
         };
 
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -986,6 +995,7 @@ async fn run_async(
         jwt,
         concurrency,
         throttle_delay_ms,
+        timeout_seconds,
     } = args;
 
     // never transcode if the feature is disabled
@@ -1039,6 +1049,16 @@ async fn run_async(
         progress_bar = None;
     }
 
+    // Emit OnTransferStarted event once before starting concurrent tasks
+    if let Some(cb) = &on_transfer_started {
+        cb.call(Ok(TransferStartedEvent {
+            message: "Transfer started".to_string(),
+            data: Some(TransferStartedData {
+                total_files: num_files as u32,
+            }),
+        }), ThreadsafeFunctionCallMode::NonBlocking);
+    }
+
     for _ in 0..concurrency.unwrap_or(1) {
         let pbx = progress_bar.clone();
         let d_files = dicom_files.clone();
@@ -1053,20 +1073,9 @@ async fn run_async(
         let called_ae_title = called_ae_title.clone();
         let calling_ae_title = calling_ae_title.clone();
         let callbacks_clone = callbacks.clone();
-        let on_transfer_started_clone = on_transfer_started.clone();
         let successful_count_clone = successful_count.clone();
         let failed_count_clone = failed_count.clone();
         tasks.spawn(async move {
-            // Emit OnTransferStarted event before moves
-            if let Some(cb) = &on_transfer_started_clone {
-                cb.call(Ok(TransferStartedEvent {
-                    message: "Transfer started".to_string(),
-                    data: Some(TransferStartedData {
-                        total_files: num_files as u32,
-                    }),
-                }), ThreadsafeFunctionCallMode::NonBlocking);
-            }
-            
             let mut scu_init = ClientAssociationOptions::new()
                 .calling_ae_title(calling_ae_title)
                 .max_pdu_length(max_pdu_length);
@@ -1118,6 +1127,7 @@ async fn run_async(
                 successful_count_clone,
                 failed_count_clone,
                 throttle_delay_ms,
+                timeout_seconds,
             )
             .await?;
 
