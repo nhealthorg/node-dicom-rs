@@ -16,7 +16,7 @@ const receiver = new StoreScp({
   port: 4446,
   callingAeTitle: 'DEMO-SCP',
   outDir: './playground/test-received',
-  verbose: false,
+  verbose: true,
   extractTags: [
     'PatientName',
     'PatientID',

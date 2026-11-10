@@ -5,6 +5,8 @@ services:
     ports:
       - "4242:4242"  # DICOM port
       - "8042:8042"  # Web interface & REST API
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - ORTHANC_NAME=OrthancTest
       - ORTHANC_AET=ORTHANC

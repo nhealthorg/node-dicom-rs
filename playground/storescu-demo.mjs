@@ -9,9 +9,8 @@
  */
 
 import { StoreScu, DicomFile } from '../index.js';
-import { readdir } from 'fs/promises';
-import { join } from 'path';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm } from 'fs/promises';
+import { basename, join } from 'path';
 import { tmpdir } from 'os';
 
 console.log('📤 StoreSCU Demo - DICOM C-STORE Sender mit randomisierten Patientendaten\n');
@@ -39,11 +38,6 @@ function randomElement(array) {
   return array[Math.floor(Math.random() * array.length)];
 }
 
-// Hilfsfunktion: Zufällige Patienten-ID generieren
-function generatePatientId() {
-  return `PAT${String(Math.floor(Math.random() * 900000) + 100000)}`;
-}
-
 // Hilfsfunktion: Zufälliges Geburtsdatum (Alter zwischen 20-80)
 function generateBirthDate() {
   const age = Math.floor(Math.random() * 60) + 20;
@@ -58,134 +52,130 @@ function generateSex() {
   return Math.random() > 0.5 ? 'M' : 'F';
 }
 
-// Hilfsfunktion: Dateien aus Ordner lesen
-async function getFilesFromFolder(folderPath) {
-  const files = await readdir(folderPath);
-  return files
-    .filter(f => f.endsWith('.dcm'))
-    .map(f => join(folderPath, f));
+async function getDicomFiles(folderPath) {
+  const entries = await readdir(folderPath, { withFileTypes: true });
+  const nestedFiles = await Promise.all(entries.map(async entry => {
+    const entryPath = join(folderPath, entry.name);
+    if (entry.isDirectory()) return getDicomFiles(entryPath);
+    return entry.isFile() && entry.name.toLowerCase().endsWith('.dcm') ? [entryPath] : [];
+  }));
+  return nestedFiles.flat().sort();
 }
 
-// Hauptfunktion: DICOM-Dateien mit randomisierten Patientendaten vorbereiten
-async function prepareRandomizedFiles(inputFolder) {
-  console.log('🔄 Bereite Dateien mit randomisierten Patientendaten vor...\n');
-  
-  // Temporären Ordner erstellen
+async function readPatientIds(filePath) {
+  const contents = await readFile(filePath, 'utf8');
+  return contents.split(/\r?\n/).slice(1)
+    .map(line => line.split('\t')[0]?.trim())
+    .filter(Boolean);
+}
+
+async function prepareRandomizedFiles(inputFolder, patientIds) {
+  console.log('🔄 Bereite DICOM-Kopien mit Test-Patientendaten vor...\n');
+
   const tempDir = await mkdtemp(join(tmpdir(), 'dicom-randomized-'));
   console.log(`📁 Temporärer Ordner: ${tempDir}\n`);
-  
-  // Alle DICOM-Dateien finden
-  const files = await getFilesFromFolder(inputFolder);
-  console.log(`📋 Gefunden: ${files.length} DICOM-Dateien\n`);
-  
-  // Zufällige Patientendaten generieren
-  const patientName = `${randomElement(LAST_NAMES)}^${randomElement(FIRST_NAMES)}`;
-  const patientId = generatePatientId();
-  const birthDate = generateBirthDate();
-  const sex = generateSex();
-  const studyDesc = randomElement(STUDY_DESCRIPTIONS);
-  
-  console.log('👤 Generierte Patientendaten:');
-  console.log(`   Name: ${patientName}`);
-  console.log(`   ID: ${patientId}`);
-  console.log(`   Geburtsdatum: ${birthDate}`);
-  console.log(`   Geschlecht: ${sex}`);
-  console.log(`   Studie: ${studyDesc}\n`);
-  
-  // Dateien verarbeiten
-  for (const filePath of files) {
-    const fileName = filePath.split('/').pop();
-    const outputPath = join(tempDir, fileName);
-    
-    const dicomFile = new DicomFile();
-    await dicomFile.open(filePath);
-    
-    // Patient- und Studien-Tags aktualisieren
-    dicomFile.updateTags({
-      PatientName: patientName,
-      PatientID: patientId,
-      PatientBirthDate: birthDate,
-      PatientSex: sex,
-      StudyDescription: studyDesc,
-      // Optional: Weitere Tags anonymisieren
-      InstitutionName: 'Demo Klinik',
-      ReferringPhysicianName: 'DR^DEMO',
-    });
-    
-    await dicomFile.saveAsDicom(outputPath);
-    dicomFile.close();
+
+  try {
+    const studyDirs = (await readdir(inputFolder, { withFileTypes: true }))
+      .filter(entry => entry.isDirectory() && /^\d+(\.\d+)+$/.test(entry.name))
+      .sort((left, right) => left.name.localeCompare(right.name));
+
+    if (studyDirs.length === 0) throw new Error(`Keine Studienordner in ${inputFolder} gefunden`);
+    if (patientIds.length < studyDirs.length) {
+      throw new Error(`Es gibt ${studyDirs.length} Studien, aber nur ${patientIds.length} Patienten-IDs`);
+    }
+
+    let fileCount = 0;
+    for (const [index, studyDir] of studyDirs.entries()) {
+      const sourceDir = join(inputFolder, studyDir.name);
+      const files = await getDicomFiles(sourceDir);
+      if (files.length === 0) continue;
+
+      const patientName = `${randomElement(LAST_NAMES)}^${randomElement(FIRST_NAMES)}`;
+      const patientId = patientIds[index];
+      const outputDir = join(tempDir, studyDir.name);
+      await mkdir(outputDir, { recursive: true });
+
+      console.log(`👤 Studie ${studyDir.name}: ${patientName} (ID ${patientId}), ${files.length} Dateien`);
+
+      for (const filePath of files) {
+        const dicomFile = new DicomFile();
+        try {
+          await dicomFile.open(filePath);
+          dicomFile.updateTags({
+            PatientName: patientName,
+            PatientID: patientId,
+            PatientBirthDate: generateBirthDate(),
+            PatientSex: generateSex(),
+            InstitutionName: 'Demo Klinik',
+            ReferringPhysicianName: 'DR^DEMO',
+          });
+          await dicomFile.saveAsDicom(join(outputDir, basename(filePath)));
+          fileCount++;
+        } finally {
+          dicomFile.close();
+        }
+      }
+    }
+
+    console.log(`\n✅ ${fileCount} DICOM-Dateien für ${studyDirs.length} Studien vorbereitet\n`);
+    return { tempDir, fileCount };
+  } catch (error) {
+    await rm(tempDir, { recursive: true, force: true });
+    throw error;
   }
-  
-  console.log(`✅ ${files.length} Dateien vorbereitet\n`);
-  return tempDir;
 }
 
-// DICOM-Dateien vorbereiten und senden
 const inputFolder = './playground/testdata/1.3.6.1.4.1.9328.50.2.160730';
-const tempDir = await prepareRandomizedFiles(inputFolder);
+const patientListPath = './playground/testdata/stammdaten.txt';
+const patientIds = await readPatientIds(patientListPath);
+const { tempDir, fileCount } = await prepareRandomizedFiles('./playground/testdata', patientIds);
 
 const sender = new StoreScu({
   callingAeTitle: 'DEMO-SCU',
   calledAeTitle: 'ORTHANC',  // Orthanc AE Title
   addr: '127.0.0.1:4242',     // Orthanc DICOM Port
-  verbose: false,
+  verbose: true,
   throttleDelayMs: 10,
 });
 
-// Temporäre Dateien hinzufügen
 sender.addFolder(tempDir);
 
 console.log('🚀 Starte Transfer...\n');
 
-// Send with progress tracking
-await sender.send({
-  onTransferStarted: (err, event) => {
-    if (err) {
-      console.error('❌ Transfer error:', err);
-      return;
-    }
-    console.log('✅', event.message);
-    console.log('   Dateien gesamt:', event.data?.totalFiles);
-    console.log('');
-  },
-  
-  onFileSent: (err, event) => {
-    if (err) {
-      console.error('❌ File error:', err);
-      return;
-    }
-    const data = event.data;
-    if (!data) return;
-    
-    console.log('✓ Gesendet:', data.file);
-    console.log('  SOP Instance:', data.sopInstanceUid);
-    console.log('  Dauer:', data.durationSeconds.toFixed(2), 'Sekunden');
-  },
-  
-  onFileError: (err, event) => {
-    const data = event.data;
-    console.error('✗ Fehlgeschlagen:', data?.file);
-    console.error('  Fehler:', data?.error);
-  },
-  
-  onTransferCompleted: async (err, event) => {
-    if (err) {
-      console.error('❌ Completion error:', err);
-      return;
-    }
-    const data = event.data;
-    if (!data) return;
-    
-    console.log('\n🎉 Transfer abgeschlossen!');
-    console.log('   Erfolgreich:', data.successful, '/', data.totalFiles);
-    console.log('   Fehlgeschlagen:', data.failed);
-    console.log('   Dauer:', data.durationSeconds.toFixed(2), 'Sekunden');
-    
-    // Temporären Ordner aufräumen
-    console.log('\n🧹 Räume temporäre Dateien auf...');
-    await rm(tempDir, { recursive: true, force: true });
-    console.log('✅ Aufgeräumt!');
-  }
-});
-
-console.log('\n✅ Demo abgeschlossen!');
+let sentFiles = 0;
+let failedFiles = 0;
+try {
+  await sender.send({
+    onTransferStarted: (err, event) => {
+      if (err) return console.error('❌ Transfer error:', err);
+      console.log('✅', event.message);
+      console.log('   Dateien gesamt:', event.data?.totalFiles ?? fileCount, '\n');
+    },
+    onFileSent: (err, event) => {
+      if (err) return console.error('❌ File error:', err);
+      sentFiles++;
+      if (sentFiles % 100 === 0 || sentFiles === fileCount) {
+        console.log(`✓ Fortschritt: ${sentFiles}/${fileCount} Dateien gesendet`);
+      }
+    },
+    onFileError: (_err, event) => {
+      failedFiles++;
+      console.error('✗ Fehlgeschlagen:', event.data?.file, event.data?.error);
+    },
+    onTransferCompleted: (err, event) => {
+      if (err) return console.error('❌ Completion error:', err);
+      const data = event.data;
+      if (!data) return;
+      console.log('\n🎉 Transfer abgeschlossen!');
+      console.log('   Erfolgreich:', data.successful, '/', data.totalFiles);
+      console.log('   Fehlgeschlagen:', data.failed);
+      console.log('   Dauer:', data.durationSeconds.toFixed(2), 'Sekunden');
+    },
+  });
+  console.log(`\n✅ Demo abgeschlossen: ${sentFiles} gesendet, ${failedFiles} fehlgeschlagen`);
+} finally {
+  console.log('\n🧹 Räume temporäre Dateien auf...');
+  await rm(tempDir, { recursive: true, force: true });
+  console.log('✅ Aufgeräumt!');
+}
