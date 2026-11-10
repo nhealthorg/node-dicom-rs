@@ -611,6 +611,7 @@ module.exports.StoreScpEvent = nativeBinding.StoreScpEvent
 module.exports.StoreScuEvent = nativeBinding.StoreScuEvent
 module.exports.TagScope = nativeBinding.TagScope
 module.exports.TransferSyntaxMode = nativeBinding.TransferSyntaxMode
+module.exports.WadoManifestAdapter = nativeBinding.WadoManifestAdapter
 module.exports.WadoMediaType = nativeBinding.WadoMediaType
 module.exports.WadoStorageType = nativeBinding.WadoStorageType
 module.exports.WadoTranscoding = nativeBinding.WadoTranscoding

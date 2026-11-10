@@ -23,6 +23,13 @@ const config = {
     // Storage backend configuration
     basePath?: string,              // Required for Filesystem
     s3Config?: S3Config,           // Required for S3
+    s3Storages?: WadoS3Storage[],  // Named stores for manifest mode
+    manifest?: {                   // Defaults based on s3Storages when omitted
+        adapter: 'Memory' | 'Sqlite' | 'Postgres' | 'None',
+        sqlitePath?: string,       // Required for Sqlite
+        postgresUrl?: string       // Required for Postgres
+    },
+    bindAddress?: string,          // IP address (default: 0.0.0.0)
     
     // Feature toggles
     enableMetadata?: boolean,      // Enable metadata endpoints (default: true)
@@ -71,6 +78,98 @@ const config = {
 const server = new WadoServer(8043, config);
 server.start();
 ```
+
+### Manifest-Resolved, Version-Pinned S3 Storage
+
+Use `s3Storages` and `ingestManifest()` to resolve standard DICOM UIDs to opaque S3 keys and optional exact object versions. `manifest.adapter` selects the resolver index: `Memory` keeps it in process memory, `Sqlite` stores it in a local database, `Postgres` stores it in PostgreSQL, and `None` disables the resolver and preserves legacy UID-derived behavior. For backward compatibility, a non-empty `s3Storages` defaults to `Memory`; without it, the adapter defaults to `None`. Resolver mode does not fall back to UID-derived keys when an entry is missing or a version cannot be read.
+
+```typescript
+import { WadoManifestAdapter, WadoServer, WadoStorageType } from 'node-dicom-rs';
+
+const wado = new WadoServer(8043, {
+    storageType: WadoStorageType.S3,
+    manifest: {
+        adapter: WadoManifestAdapter.Sqlite,
+        sqlitePath: '/var/lib/node-dicom/wado-manifest.sqlite'
+    },
+    bindAddress: '127.0.0.1',
+    s3Storages: [
+        {
+            storageId: 'project-a',
+            config: {
+                bucket: 'private-dicom-a',
+                endpoint: 'https://s3.example.internal',
+                accessKey: process.env.S3_ACCESS_KEY!,
+                secretKey: process.env.S3_SECRET_KEY!
+            }
+        }
+    ],
+    enableMetadata: true,
+    enableFrames: true,
+    enableRendered: true,
+    enableThumbnail: true,
+    enableBulkdata: true
+});
+
+await wado.ingestManifest([
+    {
+        studyInstanceUid: '1.2.3',
+        seriesInstanceUid: '1.2.3.4',
+        sopInstanceUid: '1.2.3.4.5',
+        object: {
+            storageId: 'project-a',
+            objectKey: 'records/opaque-object-9482',
+            versionId: '3Lg...exact-version'
+        }
+    }
+]);
+
+wado.start();
+```
+
+There is no separate begin/finish API: call `ingestManifest()` repeatedly with batches before `start()`. Every call upserts its batch; the first call has no special behavior, so importing a large catalog in batches works consistently. Existing rows in persistent SQLite or PostgreSQL catalogs are retained unless explicitly replaced. To discard an old catalog while importing in batches, pass `{ replaceAll: true }` on the first batch; that transaction clears the old catalog and inserts that batch, while later calls upsert normally. `start()` marks ingestion complete; while serving, calls may only apply incremental upserts. SQLite creates the database, parent directories, and schema automatically. PostgreSQL creates its `wado_manifest` table on first ingestion; provide `postgresUrl` using a PostgreSQL connection URL. Use a dedicated database or schema for each independent manifest scope because the adapter uses a fixed table name. Every database batch is transactional; validation or database errors roll it back. Duplicate study/series/instance UID tuples within a batch and unregistered `storageId` values are rejected. Memory publishes each batch as an atomic index snapshot; SQLite and PostgreSQL make each batch visible atomically.
+
+Call `getManifestMetrics()` between batches to inspect the current catalog and import state:
+
+```typescript
+const metrics = await wado.getManifestMetrics();
+console.log(metrics.studyCount, metrics.seriesCount, metrics.instanceCount);
+```
+
+The returned counts reflect the current catalog after successful ingests, not the cumulative number of rows sent; `ingestBatchCount` counts successful calls. `manifestLoaded` becomes true after the first successful batch, and `started` becomes true after the server starts. The call waits for an active ingest to finish so all values describe a consistent snapshot. Database-backed adapters calculate catalog counts with an aggregate query, so avoid polling excessively often for very large catalogs.
+
+Study, series, and their metadata endpoints enumerate only matching entries in the selected manifest adapter. The composite primary key indexes study and series prefixes in SQLite and PostgreSQL; object data itself remains in S3 and is fetched only for requested instances. Instance, metadata, frame, bulkdata, rendered, and thumbnail endpoints all load through the same resolved object reference. Set `versionId` to pin an object; when omitted, the current object version is requested. An unavailable pinned version returns an error and is never retried without the version.
+
+Each `WadoServer` instance has one manifest scope. To serve revisions that reuse the same DICOM UIDs, run a separate instance/scope for each authorized project or revision and have the authenticated application gateway route to the correct private listener. `bindAddress` can restrict the listener to loopback or another private interface; it defaults to `0.0.0.0` for backward compatibility. The service does not authenticate users itself, so do not expose a manifest-scoped listener publicly without an authorization gateway or equivalent network controls. Do not select project or revision based on untrusted client query parameters or headers.
+
+The client-facing WADO-RS URLs and media negotiation remain standard. Storage IDs, bucket details, credentials, object keys, and version IDs are server-side metadata and are not returned in WADO responses.
+
+#### Benchmarking
+
+The benchmark compares end-to-end instance, instance-metadata, series, and study retrieval against the same S3 bucket. Use UID-derived object keys so both modes resolve the same objects. Store a JSON file outside version control with this shape:
+
+```json
+{
+    "port": 18043,
+    "iterations": 20,
+    "s3Config": {
+        "bucket": "private-dicom",
+        "endpoint": "http://127.0.0.1:7070",
+        "accessKey": "...",
+        "secretKey": "..."
+    },
+    "entries": [
+        {
+            "studyInstanceUid": "1.2.3",
+            "seriesInstanceUid": "1.2.3.4",
+            "sopInstanceUid": "1.2.3.4.5",
+            "objectKey": "1.2.3/1.2.3.4/1.2.3.4.5.dcm"
+        }
+    ]
+}
+```
+
+Run `node playground/wado-s3-manifest-benchmark.mjs /path/to/benchmark-config.json`. The script reports median and p95 end-to-end latency; verbose WADO server output reports resolver/list lookup, S3 GET, and DICOM parse stages separately. Because the legacy path cannot pin an S3 version, omit `versionId` and keep the test objects unchanged for the duration of the comparison. Run against an otherwise idle S3-compatible service.
 
 ### S3 Storage
 

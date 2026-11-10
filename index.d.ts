@@ -1754,6 +1754,10 @@ export declare class StoreScu {
 /** WADO-RS Server */
 export declare class WadoServer {
   constructor(port: number, config: WadoServerConfig)
+  /** Upsert a manifest batch; pass replaceAll to replace the catalog before start. */
+  ingestManifest(entries: Array<WadoManifestEntry>, options?: WadoManifestIngestOptions | undefined | null): Promise<void>
+  /** Get current manifest counts and ingestion state. */
+  getManifestMetrics(): Promise<WadoManifestMetrics>
   /** Start the WADO-RS server */
   start(): void
   /** Stop the WADO-RS server */
@@ -3175,6 +3179,8 @@ export interface StoreScuOptions {
   s3Config?: S3Config
   /** Delay in milliseconds between sending each file for throttling/rate limiting (default: 0, no delay) */
   throttleDelayMs?: number
+  /** Timeout in seconds for waiting for C-STORE responses from the SCP (default: 30) */
+  timeoutSeconds?: number
 }
 
 /** Study hierarchy data for OnStudyCompleted event */
@@ -3267,6 +3273,49 @@ export declare const enum TransferSyntaxMode {
   Custom = 'Custom'
 }
 
+/** Manifest storage adapter for resolver mode */
+export declare const enum WadoManifestAdapter {
+  /** Keep the full manifest in process memory */
+  Memory = 'Memory',
+  /** Persist the full manifest in a local SQLite database */
+  Sqlite = 'Sqlite',
+  /** Persist the full manifest in a PostgreSQL database */
+  Postgres = 'Postgres',
+  /** Disable manifest resolution and use the configured legacy storage layout */
+  None = 'None'
+}
+
+/** Manifest storage configuration */
+export interface WadoManifestConfig {
+  adapter: WadoManifestAdapter
+  sqlitePath?: string
+  postgresUrl?: string
+}
+
+/** Maps standard DICOM UIDs to one trusted server-side object reference. */
+export interface WadoManifestEntry {
+  studyInstanceUid: string
+  seriesInstanceUid: string
+  sopInstanceUid: string
+  object: WadoObjectReference
+}
+
+/** Options for ingesting a manifest batch */
+export interface WadoManifestIngestOptions {
+  /** Replace the complete catalog and delete entries absent from this batch */
+  replaceAll?: boolean
+}
+
+/** Current manifest catalog counts and ingestion state. */
+export interface WadoManifestMetrics {
+  studyCount: number
+  seriesCount: number
+  instanceCount: number
+  ingestBatchCount: number
+  manifestLoaded: boolean
+  started: boolean
+}
+
 /** Media types supported for DICOM retrieval */
 export declare const enum WadoMediaType {
   /** application/dicom - Full DICOM files */
@@ -3275,6 +3324,13 @@ export declare const enum WadoMediaType {
   DicomJson = 'DicomJson',
   /** application/dicom+xml - DICOM XML metadata */
   DicomXml = 'DicomXml'
+}
+
+/** A manifest entry's trusted S3 object location. */
+export interface WadoObjectReference {
+  storageId: string
+  objectKey: string
+  versionId?: string
 }
 
 /** Frame rendering quality for thumbnail/rendered endpoints */
@@ -3291,6 +3347,12 @@ export interface WadoRenderingOptions {
   windowWidth?: number
 }
 
+/** A server-side S3 configuration registered under a stable identifier. */
+export interface WadoS3Storage {
+  storageId: string
+  config: S3Config
+}
+
 /** WADO-RS Server Configuration */
 export interface WadoServerConfig {
   /** Storage backend type */
@@ -3302,6 +3364,12 @@ export interface WadoServerConfig {
   basePath?: string
   /** S3 configuration (required for S3) */
   s3Config?: S3Config
+  /** Named S3 configurations used by manifest-resolved storage */
+  s3Storages?: Array<WadoS3Storage>
+  /** Manifest adapter configuration; defaults to Memory when s3Storages is provided */
+  manifest?: WadoManifestConfig
+  /** Interface address to bind to (default: "0.0.0.0") */
+  bindAddress?: string
   /** Enable metadata endpoint (GET .../metadata) */
   enableMetadata?: boolean
   /** Enable frame retrieval (GET .../frames/{frameList}) */
