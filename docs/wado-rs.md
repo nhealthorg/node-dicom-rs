@@ -14,6 +14,12 @@ The WADO-RS server provides RESTful HTTP endpoints for retrieving DICOM objects 
 - CORS support
 - Configurable feature flags
 
+Metadata endpoints return DICOM JSON with full eight-digit group/element tag
+keys, separate values for multi-valued attributes, numeric values and nested
+sequences. Pixel Data, Float Pixel Data and Double Float Pixel Data are omitted;
+retrieve pixel data through the frame or instance endpoints instead. Metadata
+parsing uses the downloaded bytes directly, without shared temporary files.
+
 ## Configuration
 
 ```typescript

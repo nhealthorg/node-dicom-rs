@@ -1460,15 +1460,8 @@ async fn load_dicom_metadata(
   // Load the DICOM file
   let buffer = load_dicom_file(study_uid, series_uid, instance_uid, config.clone()).await?;
 
-  // Write to temporary file for dicom_object to read
-  let temp_path = format!("/tmp/wado_temp_{}.dcm", instance_uid);
-  tokio::fs::write(&temp_path, &buffer)
-    .await
-    .map_err(|e| format!("Failed to write temp file: {}", e))?;
-
-  // Parse DICOM file
   let decode_started = Instant::now();
-  let obj = open_file(&temp_path).map_err(|e| format!("Failed to parse DICOM file: {}", e))?;
+  let metadata = dicom_metadata_json(&buffer)?;
   if config.verbose.unwrap_or(false) {
     println!(
       "WADO_METRIC stage=dicom_parse duration_us={}",
@@ -1476,35 +1469,21 @@ async fn load_dicom_metadata(
     );
   }
 
-  // Convert to DICOM JSON manually by extracting all elements
-  let mut json_obj = serde_json::Map::new();
+  Ok(metadata)
+}
 
-  for elem in obj.into_iter() {
-    let tag = elem.header().tag;
-    let tag_str = format!("{:08X}", tag.0);
-
-    // Build DICOM JSON element structure
-    let vr = elem.vr().to_string();
-
-    // Try to extract string value
-    let value = if let Ok(val) = elem.to_str() {
-      serde_json::json!({
-          "vr": vr,
-          "Value": [val]
-      })
-    } else {
-      serde_json::json!({
-          "vr": vr
-      })
-    };
-
-    json_obj.insert(tag_str, value);
+fn dicom_metadata_json(buffer: &[u8]) -> std::result::Result<serde_json::Value, String> {
+  let mut obj = dicom_object::from_reader(std::io::Cursor::new(buffer))
+    .map_err(|e| format!("Failed to parse DICOM file: {}", e))?;
+  // Metadata responses must not embed the native or encapsulated pixel payload.
+  for tag in [
+    dicom_core::Tag(0x7FE0, 0x0010),
+    dicom_core::Tag(0x7FE0, 0x0008),
+    dicom_core::Tag(0x7FE0, 0x0009),
+  ] {
+    obj.remove_element(tag);
   }
-
-  // Clean up temp file
-  let _ = tokio::fs::remove_file(&temp_path).await;
-
-  Ok(serde_json::Value::Object(json_obj))
+  dicom_json::to_value(&*obj).map_err(|e| format!("Failed to serialize DICOM metadata: {}", e))
 }
 
 async fn list_study_instances(
@@ -3212,6 +3191,52 @@ async fn render_dicom_image(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn wado_metadata_preserves_tags_multiplicity_numbers_names_and_sequences() {
+    use dicom_core::{dicom_value, value::DataSetSequence, DataElement, PrimitiveValue, Tag, VR};
+    use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
+
+    let position = InMemDicomObject::from_element_iter([DataElement::new(
+      Tag(0x0020, 0x0032),
+      VR::DS,
+      dicom_value!(Strs, ["0", "0", "12.5"]),
+    )]);
+    let obj = InMemDicomObject::from_element_iter([
+      DataElement::new(Tag(0x0008, 0x0016), VR::UI, PrimitiveValue::from("1.2.840.10008.5.1.4.1.1.2")),
+      DataElement::new(Tag(0x0008, 0x0018), VR::UI, PrimitiveValue::from("1.2.3.4.5")),
+      DataElement::new(Tag(0x0010, 0x0010), VR::PN, PrimitiveValue::from("Example^Patient")),
+      DataElement::new(Tag(0x0020, 0x000D), VR::UI, PrimitiveValue::from("1.2.3")),
+      DataElement::new(Tag(0x0020, 0x000E), VR::UI, PrimitiveValue::from("1.2.3.4")),
+      DataElement::new(Tag(0x0020, 0x0037), VR::DS, dicom_value!(Strs, ["1", "0", "0", "0", "1", "0"])),
+      DataElement::new(Tag(0x0028, 0x0010), VR::US, PrimitiveValue::from(2_u16)),
+      DataElement::new(Tag(0x0028, 0x0011), VR::US, PrimitiveValue::from(3_u16)),
+      DataElement::new(Tag(0x0028, 0x0030), VR::DS, dicom_value!(Strs, ["0.5", "0.75"])),
+      DataElement::new(Tag(0x5200, 0x9230), VR::SQ, DataSetSequence::from(vec![position])),
+      DataElement::new(Tag(0x7FE0, 0x0010), VR::OW, dicom_value!(U16, [1, 2, 3, 4, 5, 6])),
+    ]);
+    let file = obj.with_meta(FileMetaTableBuilder::new().transfer_syntax("1.2.840.10008.1.2.1")).unwrap();
+    let mut buffer = Vec::new();
+    file.write_all(&mut buffer).unwrap();
+    let metadata = dicom_metadata_json(&buffer).unwrap();
+
+    assert_eq!(metadata["00080018"]["Value"], serde_json::json!(["1.2.3.4.5"]));
+    assert_eq!(metadata["0020000D"]["Value"], serde_json::json!(["1.2.3"]));
+    assert_eq!(metadata["0020000E"]["Value"], serde_json::json!(["1.2.3.4"]));
+    assert_eq!(metadata["00280010"]["Value"], serde_json::json!([2]));
+    assert_eq!(metadata["00280011"]["Value"], serde_json::json!([3]));
+    assert_eq!(metadata["00200037"]["Value"].as_array().unwrap().len(), 6);
+    assert_eq!(metadata["00280030"]["Value"].as_array().unwrap().len(), 2);
+    assert_eq!(metadata["00100010"]["Value"][0]["Alphabetic"], "Example^Patient");
+    assert_eq!(metadata["52009230"]["Value"][0]["00200032"]["Value"].as_array().unwrap().len(), 3);
+    assert!(metadata.get("7FE00010").is_none());
+    assert!(metadata.get("00000008").is_none());
+  }
+
+  #[test]
+  fn wado_metadata_rejects_invalid_dicom_bytes() {
+    assert!(dicom_metadata_json(b"not a DICOM file").is_err());
+  }
 
   fn manifest_entry(object_key: &str) -> WadoManifestEntry {
     WadoManifestEntry {
