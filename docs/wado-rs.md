@@ -300,7 +300,13 @@ Frame list can be:
 - Range: `1-10`
 - Mixed: `1,3-5,7`
 
-Returns multipart/related response with raw pixel data for requested frames.
+Returns a multipart/related response containing uncompressed little-endian pixel
+data, with transfer syntax `1.2.840.10008.1.2.1` in the response and part
+content types. Compressed monochrome 8- and 16-bit frames are decoded using the
+codecs enabled in the native build; unsupported codecs or compressed color
+frames return an error rather than incorrectly labelled pixel data. Requests
+that only accept another representation receive HTTP 406. Frame extraction
+requires the `transcode` feature and currently requires a little-endian host.
 
 **Status:** ✅ Implemented (Filesystem & S3)
 

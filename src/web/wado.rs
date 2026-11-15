@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use dicom_object::open_file;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1930,6 +1929,18 @@ async fn retrieve_frames_handler(
     );
   }
 
+  if !accepts_uncompressed_frames(accept.as_deref()) {
+    return Ok(
+      warp::reply::with_status(
+        warp::reply::json(&serde_json::json!({
+          "error": "Only uncompressed multipart frame responses are supported"
+        })),
+        StatusCode::NOT_ACCEPTABLE,
+      )
+      .into_response(),
+    );
+  }
+
   // Parse frame list
   let frame_numbers = match parse_frame_list(&frame_list) {
     Ok(frames) => frames,
@@ -1962,8 +1973,15 @@ async fn retrieve_frames_handler(
     }
   };
 
-  // Extract frames
-  match extract_frames(&buffer, &frame_numbers, accept.as_deref()).await {
+  let extraction = tokio::task::spawn_blocking(move || extract_frames(&buffer, &frame_numbers)).await;
+  let result = match extraction {
+    Ok(result) => result,
+    Err(error) => {
+      eprintln!("WADO frame extraction task failed: {}", error);
+      Err("Frame extraction task failed".to_string())
+    }
+  };
+  match result {
     Ok(response) => Ok(response),
     Err(e) => Ok(
       warp::reply::with_status(
@@ -2315,27 +2333,44 @@ fn parse_frame_list(frame_list: &str) -> std::result::Result<Vec<usize>, String>
   Ok(frames)
 }
 
+fn accepts_uncompressed_frames(accept: Option<&str>) -> bool {
+  let Some(accept) = accept else { return true };
+  accept.split(',').any(|range| {
+    let mut parts = range.split(';');
+    let media_type = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+    if !matches!(media_type.as_str(), "*/*" | "multipart/*" | "multipart/related" | "application/octet-stream") {
+      return false;
+    }
+    let mut valid = true;
+    for parameter in parts {
+      let Some((key, value)) = parameter.trim().split_once('=') else {
+        return false;
+      };
+      let key = key.trim().to_ascii_lowercase();
+      let value = value.trim().trim_matches('"').to_ascii_lowercase();
+      match key.as_str() {
+        "type" => valid &= value == "application/octet-stream",
+        "transfer-syntax" => valid &= matches!(value.as_str(), "*" | "1.2.840.10008.1.2.1"),
+        "q" => valid &= value.parse::<f32>().is_ok_and(|q| q > 0.0 && q <= 1.0),
+        _ => valid = false,
+      }
+    }
+    valid
+  })
+}
+
 /// Extract frames from DICOM pixel data
-async fn extract_frames(
+fn extract_frames(
   buffer: &[u8],
   frame_numbers: &[usize],
-  accept: Option<&str>,
 ) -> std::result::Result<Response, String> {
-  // Write buffer to temporary file for dicom_object to read
-  let temp_path = format!("/tmp/wado_frame_{}.dcm", uuid::Uuid::new_v4().simple());
-  tokio::fs::write(&temp_path, buffer)
-    .await
-    .map_err(|e| format!("Failed to write temp file: {}", e))?;
+  let obj = dicom_object::from_reader(std::io::Cursor::new(buffer))
+    .map_err(|e| format!("Failed to parse DICOM file: {}", e))?;
 
-  // Parse DICOM file
-  let obj = open_file(&temp_path).map_err(|e| format!("Failed to parse DICOM file: {}", e))?;
-
-  // Get number of frames
-  let num_frames = obj
-    .element(dicom_dictionary_std::tags::NUMBER_OF_FRAMES)
-    .ok()
-    .and_then(|e| e.to_int::<u32>().ok())
-    .unwrap_or(1) as usize;
+  let num_frames = match obj.element(dicom_dictionary_std::tags::NUMBER_OF_FRAMES) {
+    Ok(element) => element.to_int::<u32>().map_err(|e| format!("Invalid number of frames: {}", e))?,
+    Err(_) => 1,
+  } as usize;
 
   // Validate frame numbers
   for &frame_num in frame_numbers {
@@ -2349,6 +2384,13 @@ async fn extract_frames(
 
   #[cfg(feature = "transcode")]
   {
+    use dicom_core::value::Value;
+    use dicom_pixeldata::PixelDecoder;
+
+    if cfg!(target_endian = "big") {
+      return Err("Frame extraction is not supported on big-endian hosts".to_string());
+    }
+
     // Get pixel data info
     let rows = obj
       .element(dicom_dictionary_std::tags::ROWS)
@@ -2376,51 +2418,60 @@ async fn extract_frames(
       .map_err(|e| format!("Failed to convert samples per pixel: {}", e))?
       as usize;
 
-    // Calculate frame size in bytes
-    let frame_size = rows * columns * samples_per_pixel * (bits_allocated / 8);
-
-    // Get raw pixel data (works for both compressed and uncompressed)
-    let all_bytes = obj
+    if rows == 0 || columns == 0 || samples_per_pixel == 0 || !matches!(bits_allocated, 8 | 16 | 32) {
+      return Err("Unsupported pixel dimensions or bits allocated".to_string());
+    }
+    let frame_size = rows.checked_mul(columns)
+      .and_then(|size| size.checked_mul(samples_per_pixel))
+      .and_then(|size| size.checked_mul(bits_allocated / 8))
+      .ok_or("Frame size overflow")?;
+    let pixel_data = obj
       .element(dicom_dictionary_std::tags::PIXEL_DATA)
-      .map_err(|e| format!("Failed to get pixel data element: {}", e))?
-      .to_bytes()
-      .map_err(|e| format!("Failed to get raw pixel data: {}", e))?
-      .to_vec();
+      .map_err(|e| format!("Failed to get pixel data element: {}", e))?;
+    let is_compressed = matches!(pixel_data.value(), Value::PixelSequence(_));
+    if is_compressed {
+      let photometric = obj.element(dicom_dictionary_std::tags::PHOTOMETRIC_INTERPRETATION)
+        .map_err(|e| format!("Failed to read photometric interpretation: {}", e))?
+        .to_str().map_err(|e| format!("Invalid photometric interpretation: {}", e))?;
+      if samples_per_pixel != 1 || !matches!(photometric.trim(), "MONOCHROME1" | "MONOCHROME2") || !matches!(bits_allocated, 8 | 16) {
+        return Err("Compressed color or non-8/16-bit frames cannot be returned without changing their metadata".to_string());
+      }
+    }
+    let uncompressed = if is_compressed {
+      None
+    } else {
+      Some(pixel_data.to_bytes().map_err(|e| format!("Failed to get raw pixel data: {}", e))?)
+    };
 
     // Build multipart response
     let boundary = format!("boundary_{}", uuid::Uuid::new_v4().simple());
     let mut body = Vec::new();
 
     for &frame_num in frame_numbers {
-      // Frame numbers are 1-indexed in DICOM
       let frame_index = frame_num - 1;
-
-      // Calculate frame offset
-      let offset = frame_index * frame_size;
-      if offset + frame_size > all_bytes.len() {
-        return Err(format!(
-          "Frame {} exceeds pixel data size (offset: {}, frame_size: {}, total: {})",
-          frame_num,
-          offset,
-          frame_size,
-          all_bytes.len()
-        ));
-      }
-
+      let frame_data = if let Some(bytes) = &uncompressed {
+        let offset = frame_index.checked_mul(frame_size).ok_or("Frame offset overflow")?;
+        let end = offset.checked_add(frame_size).ok_or("Frame offset overflow")?;
+        bytes.get(offset..end).ok_or_else(|| format!("Frame {} exceeds pixel data size", frame_num))?.to_vec()
+      } else {
+        let frame = u32::try_from(frame_index).map_err(|_| "Frame index overflow")?;
+        let decoded = obj.decode_pixel_data_frame(frame)
+          .map_err(|e| format!("Failed to decode frame {}: {}", frame_num, e))?;
+        if decoded.data().len() != frame_size {
+          return Err(format!("Decoded frame {} has an unexpected size", frame_num));
+        }
+        decoded.data().to_vec()
+      };
       // Add boundary
       body.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
-      body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+      body.extend_from_slice(b"Content-Type: application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1\r\n\r\n");
 
       // Extract frame data
-      let frame_data = &all_bytes[offset..offset + frame_size];
-      body.extend_from_slice(frame_data);
+      body.extend_from_slice(&frame_data);
     }
 
     // Final boundary
     body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
-
-    // Clean up temp file
-    let _ = tokio::fs::remove_file(&temp_path).await;
 
     Ok(
       warp::http::Response::builder()
@@ -2428,7 +2479,7 @@ async fn extract_frames(
         .header(
           "Content-Type",
           format!(
-            "multipart/related; type=\"application/octet-stream\"; boundary=\"{}\"",
+            "multipart/related; type=\"application/octet-stream\"; transfer-syntax=1.2.840.10008.1.2.1; boundary=\"{}\"",
             boundary
           ),
         )
@@ -2439,9 +2490,6 @@ async fn extract_frames(
 
   #[cfg(not(feature = "transcode"))]
   {
-    // Clean up temp file
-    let _ = tokio::fs::remove_file(&temp_path).await;
-
     Err("Frame extraction requires the 'transcode' feature to be enabled".to_string())
   }
 }
