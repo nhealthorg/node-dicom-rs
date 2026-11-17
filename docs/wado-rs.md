@@ -316,6 +316,7 @@ Retrieve rendered pixel data:
 
 ```
 GET /studies/{studyUID}/series/{seriesUID}/instances/{instanceUID}/rendered
+GET /studies/{studyUID}/series/{seriesUID}/instances/{instanceUID}/frames/{frame}/rendered
 Accept: image/jpeg
 ```
 
@@ -323,6 +324,44 @@ Query parameters:
 - `viewport` - Output dimensions (e.g., `512,512`)
 - `quality` - JPEG quality 1-100
 - `window` - Window center/width (e.g., `40,400`)
+
+Both routes require `enableRendered: true` (default: false); otherwise they return
+404. The selected-frame route is independent of `enableFrames`, which controls
+raw multipart frame retrieval.
+
+`frame` must be a single **1-based** positive integer. Invalid values (including
+lists, zero, negatives, decimals, and overflow) and frames beyond NumberOfFrames
+return **400** with a JSON `error`; missing NumberOfFrames means one frame.
+There is no fallback to frame 1. The instance route retains its default
+first-frame behavior.
+
+Selected-frame rendering and compressed instance rendering decode only the
+requested frame using the `transcode` feature (included in the default/native
+build). The pixel decoder handles decoding, with a local RLE8 workaround for the
+one-byte monochrome shift in dicom-transfer-syntax-registry 0.9.1.
+They support unsigned/signed 8/16-bit MONOCHROME1/2, including compressed
+CT transfer syntaxes supported by the pixel decoder (e.g. RLE and JPEG lossless).
+Rescale and window values use the selected Enhanced per-frame functional group,
+then the shared functional group, then root attributes. A `window` query overrides
+the metadata window, not the rescale. MONOCHROME1 is inverted after windowing.
+Without window metadata, 16-bit data is normalized to the selected frame's range.
+Unsupported photometric interpretations (including compressed color) and decoding
+failures return an explicit rendering error (500), never a misleading grayscale
+preview.
+
+Both routes accept JPEG (default) or PNG via `Accept`, and the same sizing and
+quality parameters. For example:
+
+```http
+GET /studies/1.2.3/series/4.5.6/instances/7.8.9/frames/12/rendered?viewport=160,120&quality=80
+Accept: image/jpeg
+```
+
+Compressed instance/thumbnail rendering and the selected-frame route require
+`0.3.0-beta.8` or newer. In `0.3.0-beta.7`, instance rendering reads encapsulated
+PixelData as raw bytes instead of decoding it, and the selected-frame route is
+unavailable. Upgrade the native platform package together with the JavaScript
+package; changing client URLs alone is insufficient.
 
 **Status:** ✅ Implemented
 
@@ -728,6 +767,7 @@ The WADO-RS server architecture:
 - [x] S3 storage backend (S3-compatible object storage)
 - [x] Frame extraction and retrieval - GET .../instances/{uid}/frames/{frameList}
 - [x] Rendered endpoint with windowing - GET .../instances/{uid}/rendered
+- [x] Selected-frame rendered endpoint - GET .../instances/{uid}/frames/{frame}/rendered
 - [x] Thumbnail endpoint - GET .../instances/{uid}/thumbnail
 - [x] Image rendering with automatic VOI LUT support
 - [x] Custom windowing parameters (window center/width)

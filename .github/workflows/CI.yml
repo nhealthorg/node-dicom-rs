@@ -93,6 +93,9 @@ jobs:
         run: ${{ matrix.settings.build }}
         if: ${{ !matrix.settings.docker }}
         shell: bash
+      - name: Test image rendering helpers
+        if: matrix.settings.target == 'x86_64-unknown-linux-gnu'
+        run: cargo test --lib --features napi/noop utils::image_processing::tests
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

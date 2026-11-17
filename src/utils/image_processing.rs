@@ -96,8 +96,199 @@ pub fn render_dicom_image(
     // Parse DICOM file
     let obj = from_reader(Cursor::new(buffer))
         .map_err(|e| format!("Failed to parse DICOM: {}", e))?;
-    
+
+    let encapsulated = obj.element(Tag(0x7FE0, 0x0010)).ok()
+        .is_some_and(|e| matches!(e.value(), dicom_core::value::Value::PixelSequence(_)));
+    if options.frame_number.is_some() || encapsulated {
+        return render_decoded_frame(&obj, options.frame_number.unwrap_or(0), options);
+    }
+
     render_dicom_object(&obj, options)
+}
+
+#[cfg(not(feature = "transcode"))]
+fn render_decoded_frame(
+    _obj: &dicom_object::DefaultDicomObject,
+    _frame: u32,
+    _options: &ImageRenderOptions,
+) -> Result<Vec<u8>, String> {
+    Err("Selected-frame and compressed rendering require the transcode feature".into())
+}
+
+/// Functional-group values override shared values, which override legacy root attributes.
+#[cfg(feature = "transcode")]
+fn frame_attribute<'a>(
+    obj: &'a InMemDicomObject,
+    frame: u32,
+    sequence: Tag,
+    attribute: Tag,
+) -> Option<&'a dicom_object::mem::InMemElement> {
+    let nested = |group: Tag, index: usize| {
+        obj.element(group).ok()?.items()?.get(index)?
+            .element(sequence).ok()?.items()?.first()?
+            .element(attribute).ok()
+    };
+    nested(Tag(0x5200, 0x9230), frame as usize)
+        .or_else(|| nested(Tag(0x5200, 0x9229), 0))
+        .or_else(|| obj.element(attribute).ok())
+}
+
+#[cfg(feature = "transcode")]
+fn decode_rle8_frame(obj: &dicom_object::DefaultDicomObject, frame: u32, expected: usize) -> Result<Vec<u8>, String> {
+    let error = || "Invalid 8-bit monochrome RLE frame".to_string();
+    let element = obj.element(Tag(0x7FE0, 0x0010)).map_err(|_| error())?;
+    let dicom_core::value::Value::PixelSequence(sequence) = element.value() else {
+        return Err(error());
+    };
+    let fragment = sequence.fragments().get(frame as usize).ok_or_else(error)?;
+    if fragment.len() < 64 || u32::from_le_bytes(fragment[0..4].try_into().unwrap()) != 1 {
+        return Err(error());
+    }
+    let offset = u32::from_le_bytes(fragment[4..8].try_into().unwrap()) as usize;
+    if offset < 64 {
+        return Err(error());
+    }
+    let mut encoded = fragment.get(offset..).ok_or_else(error)?;
+    let mut pixels = Vec::with_capacity(expected);
+    while pixels.len() < expected {
+        let (&control, rest) = encoded.split_first().ok_or_else(error)?;
+        encoded = rest;
+        match control as i8 {
+            0..=127 => {
+                let count = control as usize + 1;
+                let literal = encoded.get(..count).ok_or_else(error)?;
+                pixels.extend_from_slice(literal);
+                encoded = &encoded[count..];
+            }
+            -127..=-1 => {
+                let (&value, rest) = encoded.split_first().ok_or_else(error)?;
+                pixels.resize(pixels.len() + (1 - control as i8 as i16) as usize, value);
+                encoded = rest;
+            }
+            -128 => {}
+        }
+        if pixels.len() > expected {
+            return Err(error());
+        }
+    }
+    Ok(pixels)
+}
+
+#[cfg(feature = "transcode")]
+fn render_decoded_frame(
+    obj: &dicom_object::DefaultDicomObject,
+    frame: u32,
+    options: &ImageRenderOptions,
+) -> Result<Vec<u8>, String> {
+    use dicom_pixeldata::PixelDecoder;
+
+    let integer = |tag| {
+        obj.element(tag).map_err(|e| e.to_string())?
+            .to_int::<u16>().map_err(|e| e.to_string())
+    };
+    let frames = obj.element(Tag(0x0028, 0x0008)).ok()
+        .and_then(|e| e.to_int::<u32>().ok()).unwrap_or(1);
+    if frame >= frames {
+        return Err(format!("Frame {} out of range (1-{})", frame + 1, frames));
+    }
+    let photometric = obj.element(Tag(0x0028, 0x0004))
+        .map_err(|e| e.to_string())?.to_str().map_err(|e| e.to_string())?;
+    if integer(Tag(0x0028, 0x0002))? != 1
+        || !matches!(photometric.trim(), "MONOCHROME1" | "MONOCHROME2")
+    {
+        return Err(format!("Unsupported photometric interpretation for frame rendering: {}", photometric));
+    }
+    let bits = integer(Tag(0x0028, 0x0100))?;
+    let stored = integer(Tag(0x0028, 0x0101))?;
+    let high_bit = integer(Tag(0x0028, 0x0102))?;
+    let representation = integer(Tag(0x0028, 0x0103))?;
+    if !matches!(bits, 8 | 16) || stored == 0 || stored > bits
+        || high_bit >= bits || high_bit + 1 < stored || representation > 1
+    {
+        return Err("Unsupported monochrome pixel layout (expected 8/16-bit integer samples)".into());
+    }
+    let rows = integer(Tag(0x0028, 0x0010))? as u32;
+    let cols = integer(Tag(0x0028, 0x0011))? as u32;
+    if rows == 0 || cols == 0 {
+        return Err("Invalid image dimensions".into());
+    }
+    let expected = rows as usize * cols as usize * (bits as usize / 8);
+    // dicom-transfer-syntax-registry 0.9.1 shifts mono RLE8 samples by one byte
+    // and drops the last sample. Decode that one layout locally until upstream fixes it.
+    let rle8 = if bits == 8 && obj.meta().transfer_syntax() == "1.2.840.10008.1.2.5" {
+        Some(decode_rle8_frame(obj, frame, expected)?)
+    } else {
+        None
+    };
+    let decoded = if rle8.is_none() {
+        Some(obj.decode_pixel_data_frame(frame)
+            .map_err(|e| format!("Failed to decode frame {}: {}", frame + 1, e))?)
+    } else {
+        None
+    };
+    let data = rle8.as_deref()
+        .or_else(|| decoded.as_ref().map(|d| d.data())).ok_or("Missing decoded frame")?;
+    if data.len() != expected {
+        return Err(format!("Decoded frame has unexpected size: expected {}, got {}", expected, data.len()));
+    }
+    let value = |sequence, tag| {
+        frame_attribute(obj, frame, sequence, tag).and_then(|e| e.to_float64().ok())
+    };
+    let slope = options.rescale_slope
+        .or_else(|| value(Tag(0x0028, 0x9145), Tag(0x0028, 0x1053))).unwrap_or(1.0);
+    let intercept = options.rescale_intercept
+        .or_else(|| value(Tag(0x0028, 0x9145), Tag(0x0028, 0x1052))).unwrap_or(0.0);
+    let window = match (options.window_center, options.window_width) {
+        (Some(c), Some(w)) => Some((c as f64, w as f64)),
+        _ if options.apply_voi_lut.unwrap_or(false) => {
+            value(Tag(0x0028, 0x9132), Tag(0x0028, 0x1050))
+                .zip(value(Tag(0x0028, 0x9132), Tag(0x0028, 0x1051)))
+        }
+        _ => None,
+    };
+    if !slope.is_finite() || !intercept.is_finite()
+        || window.is_some_and(|(c, w)| !c.is_finite() || !w.is_finite() || w < 1.0)
+    {
+        return Err("Invalid rescale or window parameters".into());
+    }
+    let shift = high_bit + 1 - stored;
+    let mask = (1u32 << stored) - 1;
+    let pixels: Vec<f64> = data.chunks_exact(bits as usize / 8).map(|bytes| {
+        // Decoders and InMemDicomObject expose native-endian samples.
+        let raw = if bits == 8 { bytes[0] as u32 }
+            else { u16::from_ne_bytes([bytes[0], bytes[1]]) as u32 };
+        let sample = (raw >> shift) & mask;
+        let signed = if representation == 1 && sample & (1 << (stored - 1)) != 0 {
+            sample as i32 - (1i32 << stored)
+        } else {
+            sample as i32
+        };
+        signed as f64 * slope + intercept
+    }).collect();
+    let (min, max) = pixels.iter().fold((f64::INFINITY, f64::NEG_INFINITY),
+        |(min, max), &p| (min.min(p), max.max(p)));
+    let grayscale: Vec<u8> = pixels.iter().map(|&p| {
+        let normalized = if let Some((center, width)) = window {
+            if width == 1.0 {
+                if p > center - 0.5 { 1.0 } else { 0.0 }
+            } else {
+                ((p - (center - 0.5)) / (width - 1.0) + 0.5).clamp(0.0, 1.0)
+            }
+        } else if bits == 8 && options.rescale_slope.is_none()
+            && slope == 1.0 && intercept == 0.0 && representation == 0
+        {
+            p / 255.0
+        } else if max > min {
+            (p - min) / (max - min)
+        } else { 0.0 };
+        let gray = (normalized * 255.0).round() as u8;
+        if photometric.trim() == "MONOCHROME1" { 255 - gray } else { gray }
+    }).collect();
+    let gray = ImageBuffer::<Luma<u8>, _>::from_raw(cols, rows, grayscale)
+        .ok_or("Failed to build frame image")?;
+    let rgb = grayscale_to_rgb(&gray);
+    let resized = resize_image(&rgb, options.width, options.height);
+    encode_image(&resized, options)
 }
 
 /// Render DICOM image to file with specified format
@@ -481,6 +672,36 @@ pub fn parse_window(window: &str) -> Result<(f32, f32), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "transcode")]
+    #[test]
+    fn test_rle8_literal_repeat_noop_and_truncation() {
+        use dicom_core::{value::PixelFragmentSequence, DataElement, VR};
+        use dicom_object::FileMetaTableBuilder;
+
+        let decode = |packets: &[u8]| {
+            let mut fragment = vec![0; 64];
+            fragment[0] = 1;
+            fragment[4] = 64;
+            fragment.extend_from_slice(packets);
+            let obj = InMemDicomObject::from_element_iter([DataElement::new(
+                Tag(0x7FE0, 0x0010),
+                VR::OB,
+                PixelFragmentSequence::new(vec![], vec![fragment]),
+            )]);
+            let file = obj.with_meta(FileMetaTableBuilder::new()
+                .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.2")
+                .media_storage_sop_instance_uid("1.2.3")
+                .transfer_syntax("1.2.840.10008.1.2.5")).unwrap();
+            decode_rle8_frame(&file, 0, 4)
+        };
+        assert_eq!(decode(&[3, 0, 10, 20, 255]).unwrap(), [0, 10, 20, 255]);
+        assert_eq!(decode(&[128, 253, 42]).unwrap(), [42; 4]);
+        assert_eq!(decode(&[1, 5, 6, 255, 7]).unwrap(), [5, 6, 7, 7]);
+        for invalid in [&[][..], &[3, 1], &[252, 1], &[253]] {
+            assert!(decode(invalid).is_err());
+        }
+    }
 
     #[test]
     fn test_parse_viewport() {

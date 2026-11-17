@@ -1257,6 +1257,7 @@ impl WadoServer {
                   study_uid,
                   series_uid,
                   instance_uid,
+                  None,
                   params,
                   accept,
                   config,
@@ -1265,6 +1266,39 @@ impl WadoServer {
               }
             },
           );
+
+      let config_frame_rendered = config.clone();
+      let retrieve_frame_rendered = warp::path!(
+        "studies" / String / "series" / String / "instances" / String / "frames" / String / "rendered"
+      )
+      .and(warp::get())
+      .and(warp::query::<std::collections::HashMap<String, String>>())
+      .and(warp::header::optional::<String>("accept"))
+      .and_then(
+        move |study_uid: String,
+              series_uid: String,
+              instance_uid: String,
+              frame: String,
+              params: std::collections::HashMap<String, String>,
+              accept: Option<String>| {
+          let config = config_frame_rendered.snapshot();
+          async move {
+            if !config.enable_rendered.unwrap_or(false) {
+              return Err(warp::reject::not_found());
+            }
+            retrieve_rendered_handler(
+              study_uid,
+              series_uid,
+              instance_uid,
+              Some(frame),
+              params,
+              accept,
+              config,
+            )
+            .await
+          }
+        },
+      );
 
       // ================================================================
       // Route 10: Retrieve Thumbnail - GET /studies/{studyUID}/series/{seriesUID}/instances/{instanceUID}/thumbnail
@@ -1309,6 +1343,7 @@ impl WadoServer {
         .or(retrieve_frames)
         .or(retrieve_bulkdata)
         .or(retrieve_rendered)
+        .or(retrieve_frame_rendered)
         .or(retrieve_thumbnail)
         .with(cors)
         .recover(handle_rejection);
@@ -2141,10 +2176,26 @@ async fn retrieve_rendered_handler(
   study_uid: String,
   series_uid: String,
   instance_uid: String,
+  frame: Option<String>,
   params: std::collections::HashMap<String, String>,
   accept: Option<String>,
   config: Arc<WadoRequestConfig>,
 ) -> std::result::Result<Response, warp::Rejection> {
+  let bad_frame = |message: String| {
+    warp::reply::with_status(
+      warp::reply::json(&serde_json::json!({ "error": message })),
+      StatusCode::BAD_REQUEST,
+    )
+    .into_response()
+  };
+  let frame_number = if let Some(frame) = frame {
+    match frame.parse::<u32>() {
+      Ok(number) if number > 0 && frame.bytes().all(|b| b.is_ascii_digit()) => Some(number - 1),
+      _ => return Ok(bad_frame("Expected a single positive 1-based frame number".into())),
+    }
+  } else {
+    None
+  };
   if config.verbose.unwrap_or(false) {
     println!(
       "Retrieve rendered: {}/{}/{}, params: {:?}",
@@ -2168,6 +2219,23 @@ async fn retrieve_rendered_handler(
     }
   };
 
+  if let Some(frame) = frame_number {
+    let obj = match dicom_object::from_reader(std::io::Cursor::new(&buffer)) {
+      Ok(obj) => obj,
+      Err(e) => {
+        return Ok(warp::reply::with_status(
+          warp::reply::json(&serde_json::json!({ "error": format!("Failed to parse DICOM: {}", e) })),
+          StatusCode::INTERNAL_SERVER_ERROR,
+        ).into_response());
+      }
+    };
+    let count = obj.element(dicom_dictionary_std::tags::NUMBER_OF_FRAMES)
+      .ok().and_then(|e| e.to_int::<u32>().ok()).unwrap_or(1);
+    if frame >= count {
+      return Ok(bad_frame(format!("Frame {} out of range (1-{})", frame + 1, count)));
+    }
+  }
+
   // Parse query parameters
   let viewport = params.get("viewport").map(|s| s.as_str());
   let quality = params
@@ -2179,7 +2247,7 @@ async fn retrieve_rendered_handler(
   // Determine output format from Accept header
   let format = accept.as_deref().unwrap_or("image/jpeg").to_lowercase();
 
-  match render_dicom_image(&buffer, viewport, Some(quality), window, &format).await {
+  match render_dicom_image(&buffer, viewport, Some(quality), window, &format, frame_number).await {
     Ok((image_bytes, content_type)) => Ok(
       warp::http::Response::builder()
         .header("Content-Type", content_type)
@@ -2259,7 +2327,7 @@ async fn retrieve_thumbnail_handler(
   // Determine output format
   let format = accept.as_deref().unwrap_or("image/jpeg").to_lowercase();
 
-  match render_dicom_image(&buffer, Some(viewport_str), Some(quality), None, &format).await {
+  match render_dicom_image(&buffer, Some(viewport_str), Some(quality), None, &format, None).await {
     Ok((image_bytes, content_type)) => Ok(
       warp::http::Response::builder()
         .header("Content-Type", content_type)
@@ -2746,6 +2814,7 @@ async fn render_dicom_image(
   quality: Option<u8>,
   window: Option<&str>,
   format: &str,
+  frame_number: Option<u32>,
 ) -> std::result::Result<(Vec<u8>, &'static str), String> {
   use crate::utils::image_processing::{
     parse_viewport, parse_window, render_dicom_image as render_image, ImageOutputFormat,
@@ -2780,7 +2849,7 @@ async fn render_dicom_image(
     rescale_intercept: None, // Let utility read from file
     rescale_slope: None,     // Let utility read from file
     convert_to_8bit: None,   // Always 8-bit for rendered output
-    frame_number: None,
+    frame_number,
     format: ImageOutputFormat::from_mime_type(format),
   };
 
