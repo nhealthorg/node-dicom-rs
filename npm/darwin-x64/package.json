@@ -1,6 +1,6 @@
 {
   "name": "@nuxthealth/node-dicom-darwin-x64",
-  "version": "0.3.0-beta.10",
+  "version": "0.3.0-beta.11",
   "os": [
     "darwin"
   ],
