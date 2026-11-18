@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +7,7 @@ use dicom_dictionary_std::tags;
 use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
-use dicom_core::{dicom_value, DataElement, VR};
+use dicom_core::{dicom_value, DataElement, DicomValue, PrimitiveValue, Tag, VR, header::Header};
 use dicom_ul::{
     association::{Association, ServerAssociation},
     pdu::{PDataValueType, PresentationContextResultReason},
@@ -23,6 +23,82 @@ use async_trait::async_trait;
 use crate::storescp::{create_cecho_response, create_cstore_response, transfer::ABSTRACT_SYNTAXES, ScpEventDetails, StudyHierarchyData, SeriesHierarchyData, InstanceHierarchyData};
 use crate::utils::{build_s3_bucket, s3_put_object, CustomTag};
 use crate::utils::dicom_tags::{parse_tag, get_tag_scope, TagScope};
+
+fn valid_uid(uid: &str) -> bool {
+    uid.len() <= 64 && uid.contains('.') && uid.split('.').all(|part| {
+        !part.is_empty()
+            && (part.len() == 1 || !part.starts_with('0'))
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn stored_identity(obj: &InMemDicomObject) -> Option<(String, String, String)> {
+    fn read(obj: &InMemDicomObject, tag: dicom_core::Tag) -> Option<String> {
+        let value = obj.element(tag).ok()?.to_str().ok()?;
+        let value = value.trim_end_matches('\0');
+        valid_uid(value).then(|| value.to_owned())
+    }
+
+    Some((
+        read(obj, tags::STUDY_INSTANCE_UID)?,
+        read(obj, tags::SERIES_INSTANCE_UID)?,
+        read(obj, tags::SOP_INSTANCE_UID)?,
+    ))
+}
+
+fn identity_tag(tag: Tag) -> bool {
+    matches!(tag, tags::STUDY_INSTANCE_UID | tags::SERIES_INSTANCE_UID | tags::SOP_INSTANCE_UID
+        | tags::REFERENCED_SOP_INSTANCE_UID | tags::REFERENCED_SOP_INSTANCE_UID_IN_FILE
+        | tags::FRAME_OF_REFERENCE_UID | tags::REFERENCED_FRAME_OF_REFERENCE_UID
+        | tags::RELATED_FRAME_OF_REFERENCE_UID | tags::SOURCE_FRAME_OF_REFERENCE_UID
+        | tags::TARGET_FRAME_OF_REFERENCE_UID | tags::SYNCHRONIZATION_FRAME_OF_REFERENCE_UID
+        | tags::VOLUME_FRAME_OF_REFERENCE_UID | tags::TABLE_FRAME_OF_REFERENCE_UID
+        | tags::EQUIPMENT_FRAME_OF_REFERENCE_UID | tags::CONCATENATION_UID
+        | tags::DIMENSION_ORGANIZATION_UID | tags::IRRADIATION_EVENT_UID | tags::TRACKING_UID)
+}
+
+fn collect_identity_uids(obj: &InMemDicomObject, uids: &mut BTreeSet<String>) -> Result<(), &'static str> {
+    for element in obj.iter() {
+        if let Some(items) = element.items() {
+            for item in items {
+                collect_identity_uids(item, uids)?;
+            }
+        } else if identity_tag(element.tag()) {
+            for value in element.to_multi_str().map_err(|_| "invalid identity UID value")?.iter() {
+                let uid = value.trim_end_matches('\0');
+                if uid.is_empty() { continue; }
+                if !valid_uid(uid) { return Err("invalid identity UID"); }
+                uids.insert(uid.to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_identity_uids(obj: &mut InMemDicomObject, map: &HashMap<String, String>) {
+    let tags: Vec<_> = obj.iter().filter(|e| e.items().is_some() || identity_tag(e.tag())).map(|e| e.tag()).collect();
+    for tag in tags {
+        obj.update_value(tag, |value| {
+            if let Some(items) = value.items_mut() {
+                for item in items {
+                    rewrite_identity_uids(item, map);
+                }
+            } else if let Ok(values) = value.to_multi_str() {
+                let rewritten = values.iter().map(|value| {
+                    map.get(value.trim_end_matches('\0')).cloned().unwrap_or_else(|| value.clone())
+                }).collect();
+                *value = DicomValue::Primitive(PrimitiveValue::Strs(rewritten));
+            }
+        });
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UidStoreResponse {
+    tags: HashMap<String, String>,
+    uid_map: HashMap<String, String>,
+}
 
 async fn send_cstore_response(
     association: &mut dicom_ul::association::server::AsyncServerAssociation<tokio::net::TcpStream>,
@@ -306,7 +382,7 @@ async fn inner(
     args: &crate::storescp::StoreScp,
     extract_tags: &[String],
     extract_custom_tags: &[CustomTag],
-    on_before_store: &Option<Arc<napi::threadsafe_function::ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>>>,
+    on_before_store: &Option<(Arc<napi::threadsafe_function::ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>>, bool)>,
     on_file_stored: impl Fn(ScpEventDetails) + Send + 'static,
     on_study_completed: Arc<Mutex<dyn Fn(StudyHierarchyData) + Send + 'static>>
 ) -> Result<(), Whatever>
@@ -430,49 +506,6 @@ async fn inner(
                                     TransferSyntaxRegistry.get(ts).unwrap(),
                                 )
                                 .whatever_context("failed to read DICOM data object")?;
-                                let file_meta = FileMetaTableBuilder::new()
-                                    .media_storage_sop_class_uid(
-                                        obj.element(tags::SOP_CLASS_UID)
-                                            .whatever_context("missing SOP Class UID")?
-                                            .to_str()
-                                            .whatever_context("could not retrieve SOP Class UID")?,
-                                    )
-                                    .media_storage_sop_instance_uid(
-                                        obj.element(tags::SOP_INSTANCE_UID)
-                                            .whatever_context("missing SOP Instance UID")?
-                                            .to_str()
-                                            .whatever_context("missing SOP Instance UID")?,
-                                    )
-                                    .transfer_syntax(ts)
-                                    .build()
-                                    .whatever_context(
-                                        "failed to build DICOM meta file information",
-                                    )?;
-
-                                // read important study and series instance UIDs for saving the file
-                                let study_instance_uid = obj
-                                    .element(tags::STUDY_INSTANCE_UID)
-                                    .whatever_context("missing STUDY INSTANCE UID")?
-                                    .to_str()
-                                    .whatever_context(
-                                        "could not retrieve Affected STUDY INSTANCE UID",
-                                    )?
-                                    .to_string();
-                                let series_instance_uid = obj
-                                    .element(tags::SERIES_INSTANCE_UID)
-                                    .whatever_context("missing SERIES INSTANCE UID")?
-                                    .to_str()
-                                    .whatever_context(
-                                        "could not retrieve Affected SERIES INSTANCE UID",
-                                    )?
-                                    .to_string();
-
-                                // write the files to the current directory with their SOPInstanceUID as filenames
-                                let mut file_path = PathBuf::from(out_dir.as_ref().expect("Output directory must be set"));
-                                file_path.push(study_instance_uid.to_string());
-                                file_path.push(series_instance_uid.to_string());
-                                file_path.push(sop_instance_uid.trim_end_matches('\0').to_string() + ".dcm");
-
                                 // Extract metadata as flat tags BEFORE saving
                                 let mut tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
                                     Some(extract_tags_flat(&obj, extract_tags, extract_custom_tags))
@@ -481,18 +514,40 @@ async fn inner(
                                 };
 
                                 let mut obj_to_save = obj;
-                                if let Some(callback_arc) = on_before_store {
+                                if let Some((callback_arc, with_uid_map)) = on_before_store {
                                     let result: Result<(), &'static str> = async {
                                         let extracted = tags.as_mut().ok_or("no extraction configured")?;
-                                        let json = serde_json::to_string(extracted)
-                                            .map_err(|_| "could not encode extracted tags")?;
+                                        let mut uids = BTreeSet::new();
+                                        let json = if *with_uid_map {
+                                            stored_identity(&obj_to_save).ok_or("invalid original identity")?;
+                                            collect_identity_uids(&obj_to_save, &mut uids)?;
+                                            serde_json::to_string(&serde_json::json!({ "tags": extracted, "uids": uids }))
+                                        } else {
+                                            serde_json::to_string(extracted)
+                                        }.map_err(|_| "could not encode extracted tags")?;
                                         let promise = callback_arc.call_async(Ok(json)).await
                                             .map_err(|_| "callback invocation failed")?;
                                         let json = promise.await.map_err(|_| "callback rejected")?;
-                                        let updates = serde_json::from_str::<HashMap<String, String>>(&json)
-                                            .map_err(|_| "callback must return a JSON object of tag strings")?;
+                                        let updates = if *with_uid_map {
+                                            let response = serde_json::from_str::<UidStoreResponse>(&json)
+                                                .map_err(|_| "invalid UID callback response")?;
+                                            let targets: BTreeSet<_> = response.uid_map.values().collect();
+                                            if response.uid_map.len() != uids.len() || targets.len() != uids.len()
+                                                || !uids.iter().all(|uid| response.uid_map.get(uid)
+                                                    .is_some_and(|target| valid_uid(target) && !uids.contains(target))) {
+                                                return Err("invalid or incomplete UID mapping");
+                                            }
+                                            rewrite_identity_uids(&mut obj_to_save, &response.uid_map);
+                                            response.tags
+                                        } else {
+                                            serde_json::from_str::<HashMap<String, String>>(&json)
+                                                .map_err(|_| "callback must return a JSON object of tag strings")?
+                                        };
                                         for (name, value) in updates {
                                             let tag = parse_tag(&name).map_err(|_| "callback returned an unknown tag")?;
+                                            if *with_uid_map && identity_tag(tag) {
+                                                return Err("identity updates must use the UID mapping");
+                                            }
                                             if obj_to_save.element(tag).ok()
                                                 .and_then(|element| element.to_str().ok())
                                                 .as_deref() != Some(value.as_str())
@@ -502,8 +557,17 @@ async fn inner(
                                                         tags::PATIENT_NAME => VR::PN,
                                                         tags::PATIENT_BIRTH_DATE => VR::DA,
                                                         tags::PATIENT_SEX => VR::CS,
+                                                        tags::STUDY_INSTANCE_UID | tags::SERIES_INSTANCE_UID
+                                                        | tags::SOP_INSTANCE_UID | tags::FRAME_OF_REFERENCE_UID => VR::UI,
                                                         _ => VR::LO,
                                                     });
+                                                if tag == tags::SOP_CLASS_UID {
+                                                    return Err("callback cannot change SOP Class UID");
+                                                }
+                                                if matches!(tag, tags::STUDY_INSTANCE_UID | tags::SERIES_INSTANCE_UID
+                                                    | tags::SOP_INSTANCE_UID | tags::FRAME_OF_REFERENCE_UID) && !valid_uid(&value) {
+                                                    return Err("callback returned an invalid identity UID");
+                                                }
                                                 obj_to_save.put(DataElement::new(tag, vr, dicom_value!(Str, value.as_str())));
                                             }
                                         }
@@ -518,6 +582,27 @@ async fn inner(
                                     }
                                 }
                                 
+                                let Some((study_instance_uid, series_instance_uid, stored_sop_instance_uid)) = stored_identity(&obj_to_save) else {
+                                    warn!("C-STORE rejected before storage: invalid dataset identity");
+                                    send_cstore_response(&mut association, data_value.presentation_context_id,
+                                        msgid, &sop_class_uid, &sop_instance_uid, 0xC000).await?;
+                                    continue;
+                                };
+                                let mut file_path = PathBuf::from(out_dir.as_ref().expect("Output directory must be set"));
+                                file_path.push(&study_instance_uid);
+                                file_path.push(&series_instance_uid);
+                                file_path.push(format!("{stored_sop_instance_uid}.dcm"));
+                                let file_meta = FileMetaTableBuilder::new()
+                                    .media_storage_sop_class_uid(
+                                        obj_to_save.element(tags::SOP_CLASS_UID)
+                                            .whatever_context("missing SOP Class UID")?
+                                            .to_str()
+                                            .whatever_context("could not retrieve SOP Class UID")?,
+                                    )
+                                    .media_storage_sop_instance_uid(&stored_sop_instance_uid)
+                                    .transfer_syntax(ts)
+                                    .build()
+                                    .whatever_context("failed to build DICOM meta file information")?;
                                 let obj_for_file = obj_to_save.clone();
                                 let file_obj = obj_for_file.with_exact_meta(file_meta);
                                 let mut dicom_bytes = Vec::new();
@@ -543,7 +628,7 @@ async fn inner(
                                 // Emit the OnFileStored event with flat tags
                                 on_file_stored(ScpEventDetails {
                                     file: Some(file_path_str.clone()),
-                                    sop_instance_uid: Some(sop_instance_uid.clone()),
+                                    sop_instance_uid: Some(stored_sop_instance_uid.clone()),
                                     sop_class_uid: Some(sop_class_uid.clone()),
                                     transfer_syntax_uid: Some(transfer_syntax_uid.clone()),
                                     study_instance_uid: Some(study_instance_uid.clone()),
@@ -595,7 +680,7 @@ async fn inner(
 
                                     let series_entry = study.series.iter_mut().find(|s| s.series_instance_uid == series_instance_uid);
                                     let instance_hierarchy = InstanceHierarchy {
-                                        sop_instance_uid: sop_instance_uid.clone(),
+                                        sop_instance_uid: stored_sop_instance_uid.clone(),
                                         sop_class_uid: sop_class_uid.clone(),
                                         transfer_syntax_uid: transfer_syntax_uid.clone(),
                                         file: file_path_str.clone(),
@@ -603,7 +688,7 @@ async fn inner(
                                     };
                                     
                                     if let Some(series_entry) = series_entry {
-                                        if !series_entry.instances.iter().any(|i| i.sop_instance_uid == sop_instance_uid) {
+                                        if !series_entry.instances.iter().any(|i| i.sop_instance_uid == stored_sop_instance_uid) {
                                             series_entry.instances.push(instance_hierarchy);
                                         }
                                     } else {

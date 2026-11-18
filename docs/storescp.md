@@ -1508,15 +1508,32 @@ type OnBeforeStoreCallback = (err: Error | null, tagsJson: string) => Promise<st
 10. Callback failures, invalid JSON results, and unrecognized tag names return a C-STORE failure (`0xC000`) before writing the file or emitting storage events. Return the JSON object `{}` for an intentional no-op, not an empty string.
 
 **Critical Limitations:**
-1. **Only return patient demographic tags** (PatientName, PatientID, PatientBirthDate, PatientSex) from your callback
+1. **Only return patient demographic tags or explicitly managed identity UIDs** from your callback
    - ❌ Do NOT return pixel-related tags (BitsAllocated, Rows, Columns, PixelSpacing, etc.)
    - ❌ Do NOT return technical image metadata tags
    - ✅ Only return the specific tags you actually modified
    - Returning unmodified technical tags can corrupt the DICOM file structure and make images unreadable
-2. **Use case**: This callback is designed for **anonymization and patient data modification only**
+2. **Use case**: This callback supports patient data and top-level identity changes
    - Not intended for modifying image pixel data or technical parameters
    - Modifying pixel-related metadata will break image viewers (e.g., CornerstoneJS)
 3. **Best practice**: Extract only the tags you need to modify in `extractTags`, return only those modified tags from the callback
+
+When the callback changes the Study, Series, or SOP Instance UID, the stored
+dataset, object key, File Meta (Media Storage SOP Instance UID), and storage
+events use the resulting identity. The C-STORE response still identifies the
+original request. The callback does not rewrite nested sequence references;
+changing top-level UIDs alone is not sufficient for referenced datasets.
+
+`onBeforeStoreWithUidMap` is the opt-in alternative for recursive identity
+mapping. Its JSON input is `{ tags, uids }`, where `tags` are the configured flat
+tags and `uids` are the distinct identity values seen in the dataset and its
+sequences. Return `{ tags, uidMap }`: `tags` contains patient tag updates and
+`uidMap` maps every input UID to a distinct valid replacement. Identity fields
+must be changed through `uidMap`, not `tags`. The mapping covers Study, Series,
+SOP Instance (including Referenced SOP Instance), Frame of Reference and
+related identity tags such as Dimension Organization and Concatenation. It
+does not rewrite SOP Class or Transfer Syntax UIDs, or remove private or
+other identifying tags. Invalid or incomplete mappings fail C-STORE before storage.
 
 #### Configuration Requirements
 

@@ -1452,6 +1452,7 @@ export declare class StoreScp {
    * ```
    */
   onBeforeStore(callback: (err: Error | null, tagsJson: string) => Promise<string>): void
+  onBeforeStoreWithUidMap(callback: (err: Error | null, inputJson: string) => Promise<string>): void
 }
 
 /** * DICOM C-STORE SCU (Service Class User) Client.

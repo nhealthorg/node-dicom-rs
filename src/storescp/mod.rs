@@ -136,7 +136,7 @@ pub struct StoreScp {
     pub(crate) transfer_syntaxes: Vec<String>,
     /// Callback for modifying tags before storage (async, returns Promise)
     /// Tags are passed as JSON string due to NAPI-RS ThreadsafeFunction limitations with HashMap
-    pub(crate) on_before_store: Option<Arc<ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>>>,
+    pub(crate) on_before_store: Option<(Arc<ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>>, bool)>,
     /// Shutdown channel for graceful shutdown
     pub(crate) shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
@@ -920,7 +920,12 @@ impl StoreScp {
      */
     #[napi(ts_args_type = "callback: (err: Error | null, tagsJson: string) => Promise<string>")]
     pub fn on_before_store(&mut self, callback: ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>) {
-        self.on_before_store = Some(Arc::new(callback));
+        self.on_before_store = Some((Arc::new(callback), false));
+    }
+
+    #[napi]
+    pub fn on_before_store_with_uid_map(&mut self, callback: ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>) {
+        self.on_before_store = Some((Arc::new(callback), true));
     }
 
     fn emit_event(event: StoreScpEvent, data: ScpEventData) {
