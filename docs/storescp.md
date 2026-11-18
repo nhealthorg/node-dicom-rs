@@ -1503,9 +1503,9 @@ type OnBeforeStoreCallback = (err: Error | null, tagsJson: string) => Promise<st
 5. The **server is fully asynchronous** - multiple files are processed in parallel, each with independent callback execution
 6. Only tags specified in `extractTags` configuration are available
 7. You must return a Promise that resolves to a JSON string of modified tags
-8. If `extractTags` is empty or not configured, the callback won't be invoked
+8. Configure `extractTags` or `extractCustomTags`. If neither is configured, C-STORE requests are rejected while the callback is enabled.
 9. Must call `onBeforeStore()` **before** calling `start()`
-10. Promise rejections are logged and prevent the file from being saved
+10. Callback failures, invalid JSON results, and unrecognized tag names return a C-STORE failure (`0xC000`) before writing the file or emitting storage events. Return the JSON object `{}` for an intentional no-op, not an empty string.
 
 **Critical Limitations:**
 1. **Only return patient demographic tags** (PatientName, PatientID, PatientBirthDate, PatientSex) from your callback

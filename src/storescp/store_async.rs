@@ -24,6 +24,29 @@ use crate::storescp::{create_cecho_response, create_cstore_response, transfer::A
 use crate::utils::{build_s3_bucket, s3_put_object, CustomTag};
 use crate::utils::dicom_tags::{parse_tag, get_tag_scope, TagScope};
 
+async fn send_cstore_response(
+    association: &mut dicom_ul::association::server::AsyncServerAssociation<tokio::net::TcpStream>,
+    context_id: u8,
+    message_id: u16,
+    sop_class_uid: &str,
+    sop_instance_uid: &str,
+    status: u16,
+) -> Result<(), Whatever> {
+    let ts = dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN.erased();
+    let mut data = Vec::new();
+    create_cstore_response(message_id, sop_class_uid, sop_instance_uid, status)
+        .write_dataset_with_ts(&mut data, &ts)
+        .whatever_context("could not write C-STORE response")?;
+    association.send(&Pdu::PData {
+        data: vec![dicom_ul::pdu::PDataValue {
+            presentation_context_id: context_id,
+            value_type: PDataValueType::Command,
+            is_last: true,
+            data,
+        }],
+    }).await.whatever_context("failed to send C-STORE response")
+}
+
 // New hierarchy for OnStudyCompleted event
 #[derive(Clone, Debug, Serialize)]
 struct StudyHierarchy {
@@ -457,100 +480,42 @@ async fn inner(
                                     None
                                 };
 
-                                // Call on_before_store callback if provided
-                                // This allows modification of tags before saving (e.g., anonymization)
-                                let mut obj_to_save = obj.clone();
+                                let mut obj_to_save = obj;
                                 if let Some(callback_arc) = on_before_store {
-                                    info!("on_before_store callback is set");
-                                    if let Some(ref extracted_tags) = tags {
-                                        info!("Extracted tags available, calling callback with {} tags", extracted_tags.len());
-                                        
-                                        use dicom_core::{dicom_value, DataElement, VR};
-                                        
-                                        // Serialize HashMap to JSON string (HashMap doesn't work directly in ThreadsafeFunction)
-                                        let tags_json = serde_json::to_string(&extracted_tags).unwrap_or_default();
-                                        
-                                        // Call async JS callback - returns Future<Promise<String>>
-                                        // First await gets the Promise, second await gets the JSON string
-                                        match callback_arc.call_async(Ok(tags_json)).await {
-                                            Ok(promise) => {
-                                                match promise.await {
-                                                    Ok(result_json) if !result_json.is_empty() => {
-                                                        // Parse JSON string back to HashMap
-                                                        match serde_json::from_str::<HashMap<String, String>>(&result_json) {
-                                                            Ok(modified_tags) if !modified_tags.is_empty() => {
-                                                                info!("Successfully received {} modified tags from Promise", modified_tags.len());
-                                                                // Update the DICOM object with modified tags
-                                                                // Only update if value actually changed to preserve original encoding
-                                                                for (tag_name, new_value) in &modified_tags {
-                                                                    if let Ok(tag) = crate::utils::parse_tag(tag_name) {
-                                                                        // Get current value to check if it changed
-                                                                        let current_value = obj_to_save.element(tag)
-                                                                            .ok()
-                                                                            .and_then(|e| e.to_str().ok())
-                                                                            .map(|s| s.to_string())
-                                                                            .unwrap_or_default();
-                                                                        
-                                                                        // Only update if value actually changed
-                                                                        if current_value != *new_value {
-                                                                            // Get VR from existing element or use PN for patient name, LO for others
-                                                                            let vr = obj_to_save.element(tag)
-                                                                                .map(|e| e.vr())
-                                                                                .unwrap_or_else(|_| {
-                                                                                    // Use appropriate VR for common patient tags
-                                                                                    if tag == tags::PATIENT_NAME {
-                                                                                        VR::PN
-                                                                                    } else if tag == tags::PATIENT_ID {
-                                                                                        VR::LO
-                                                                                    } else if tag == tags::PATIENT_BIRTH_DATE {
-                                                                                        VR::DA
-                                                                                    } else if tag == tags::PATIENT_SEX {
-                                                                                        VR::CS
-                                                                                    } else {
-                                                                                        VR::LO
-                                                                                    }
-                                                                                });
-                                                                            
-                                                                            // Create new element with updated value
-                                                                            let new_element = DataElement::new(tag, vr, dicom_value!(Str, new_value.as_str()));
-                                                                            obj_to_save.put(new_element);
-                                                                            info!("Updated tag {} from '{}' to '{}'", tag_name, current_value, new_value);
-                                                                        }
-                                                                    }
-                                                                }
-                                                                // Merge modified tags into the original tags for event emission
-                                                                // This preserves all extracted tags while updating the modified ones
-                                                                if let Some(ref mut original_tags) = tags {
-                                                                    for (key, value) in modified_tags {
-                                                                        original_tags.insert(key, value);
-                                                                    }
-                                                                }
-                                                            }
-                                                            Ok(_) => {
-                                                                warn!("Received empty modified tags from Promise");
-                                                            }
-                                                            Err(parse_err) => {
-                                                                error!("Failed to parse JSON from Promise: {:?}", parse_err);
-                                                            }
-                                                        }
-                                                    }
-                                                    Ok(_) => {
-                                                        warn!("Promise resolved but returned empty JSON");
-                                                    }
-                                                    Err(promise_err) => {
-                                                        error!("Promise rejected: {:?}", promise_err);
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!("call_async failed: {:?}", e);
+                                    let result: Result<(), &'static str> = async {
+                                        let extracted = tags.as_mut().ok_or("no extraction configured")?;
+                                        let json = serde_json::to_string(extracted)
+                                            .map_err(|_| "could not encode extracted tags")?;
+                                        let promise = callback_arc.call_async(Ok(json)).await
+                                            .map_err(|_| "callback invocation failed")?;
+                                        let json = promise.await.map_err(|_| "callback rejected")?;
+                                        let updates = serde_json::from_str::<HashMap<String, String>>(&json)
+                                            .map_err(|_| "callback must return a JSON object of tag strings")?;
+                                        for (name, value) in updates {
+                                            let tag = parse_tag(&name).map_err(|_| "callback returned an unknown tag")?;
+                                            if obj_to_save.element(tag).ok()
+                                                .and_then(|element| element.to_str().ok())
+                                                .as_deref() != Some(value.as_str())
+                                            {
+                                                let vr = obj_to_save.element(tag).map(|element| element.vr())
+                                                    .unwrap_or(match tag {
+                                                        tags::PATIENT_NAME => VR::PN,
+                                                        tags::PATIENT_BIRTH_DATE => VR::DA,
+                                                        tags::PATIENT_SEX => VR::CS,
+                                                        _ => VR::LO,
+                                                    });
+                                                obj_to_save.put(DataElement::new(tag, vr, dicom_value!(Str, value.as_str())));
                                             }
                                         }
-                                    } else {
-                                        warn!("on_before_store callback set but no tags were extracted");
+                                        *extracted = extract_tags_flat(&obj_to_save, extract_tags, extract_custom_tags);
+                                        Ok(())
+                                    }.await;
+                                    if let Err(reason) = result {
+                                        warn!("C-STORE rejected before storage: {}", reason);
+                                        send_cstore_response(&mut association, data_value.presentation_context_id,
+                                            msgid, &sop_class_uid, &sop_instance_uid, 0xC000).await?;
+                                        continue;
                                     }
-                                } else {
-                                    info!("No on_before_store callback set");
                                 }
                                 
                                 let obj_for_file = obj_to_save.clone();
@@ -695,35 +660,8 @@ async fn inner(
                                     }
                                 }
 
-                                // send C-STORE-RSP object
-                                // commands are always in implicit VR LE
-                                let ts =
-                                    dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN
-                                        .erased();
-
-                                let obj = create_cstore_response(
-                                    msgid,
-                                    &sop_class_uid,
-                                    &sop_instance_uid,
-                                );
-
-                                let mut obj_data = Vec::new();
-
-                                obj.write_dataset_with_ts(&mut obj_data, &ts)
-                                    .whatever_context("could not write response object")?;
-
-                                let pdu_response = Pdu::PData {
-                                    data: vec![dicom_ul::pdu::PDataValue {
-                                        presentation_context_id: data_value.presentation_context_id,
-                                        value_type: PDataValueType::Command,
-                                        is_last: true,
-                                        data: obj_data,
-                                    }],
-                                };
-                                association
-                                    .send(&pdu_response)
-                                    .await
-                                    .whatever_context("failed to send response object to SCU")?;
+                                send_cstore_response(&mut association, data_value.presentation_context_id,
+                                    msgid, &sop_class_uid, &sop_instance_uid, 0x0000).await?;
                             }
                         }
                     }
